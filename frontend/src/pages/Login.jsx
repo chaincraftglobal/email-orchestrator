@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { authAPI } from '../services/api';
+import authService from '../services/authService';
 
 function Login() {
   const navigate = useNavigate();
@@ -28,9 +29,9 @@ function Login() {
       const response = await authAPI.login(formData.username, formData.password);
       
       if (response.success) {
-        // Store token and user info
-        localStorage.setItem('token', response.token);
-        localStorage.setItem('user', JSON.stringify(response.user));
+        // Store token and user info with timestamp (24-hour session)
+        authService.setToken(response.token);
+        authService.setUser(response.user);
         
         // Redirect to dashboard
         navigate('/dashboard');

@@ -8,34 +8,57 @@ import EditMerchant from './pages/EditMerchant';
 import EmailList from './pages/EmailList';
 import ThreadView from './pages/ThreadView';
 import Scheduler from './pages/Scheduler';
+import PrivateRoute from './components/PrivateRoute';
 
 function App() {
   return (
     <Router>
       <Routes>
-        {/* Login Page - Default Route */}
+        {/* Login Page - Public Route */}
         <Route path="/" element={<Login />} />
         
-        {/* Dashboard - After Login */}
-        <Route path="/dashboard" element={<Dashboard />} />
+        {/* Protected Routes - Require Authentication */}
+        <Route path="/dashboard" element={
+          <PrivateRoute>
+            <Dashboard />
+          </PrivateRoute>
+        } />
         
-        {/* Merchants List */}
-        <Route path="/merchants" element={<Merchants />} />
+        <Route path="/merchants" element={
+          <PrivateRoute>
+            <Merchants />
+          </PrivateRoute>
+        } />
         
-        {/* Add Merchant */}
-        <Route path="/add-merchant" element={<AddMerchant />} />
+        <Route path="/add-merchant" element={
+          <PrivateRoute>
+            <AddMerchant />
+          </PrivateRoute>
+        } />
         
-        {/* Edit Merchant */}
-        <Route path="/edit-merchant/:id" element={<EditMerchant />} />
+        <Route path="/edit-merchant/:id" element={
+          <PrivateRoute>
+            <EditMerchant />
+          </PrivateRoute>
+        } />
         
-        {/* Email List for Merchant */}
-        <Route path="/emails/:merchantId" element={<EmailList />} />
+        <Route path="/emails/:merchantId" element={
+          <PrivateRoute>
+            <EmailList />
+          </PrivateRoute>
+        } />
         
-        {/* Thread View - Chat Style */}
-        <Route path="/thread/:threadId" element={<ThreadView />} />
+        <Route path="/thread/:threadId" element={
+          <PrivateRoute>
+            <ThreadView />
+          </PrivateRoute>
+        } />
         
-        {/* Scheduler Dashboard */}
-        <Route path="/scheduler" element={<Scheduler />} />
+        <Route path="/scheduler" element={
+          <PrivateRoute>
+            <Scheduler />
+          </PrivateRoute>
+        } />
       </Routes>
     </Router>
   );
