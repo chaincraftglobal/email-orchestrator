@@ -1,7 +1,21 @@
 import axios from 'axios';
 
-// Base URL for API (change to your backend URL)
-const API_BASE_URL = 'http://localhost:5001/api';
+// Hardcoded production URL (bypasses .env files)
+const PRODUCTION_API_URL = 'https://email-orchestrator-production.up.railway.app/api';
+const DEVELOPMENT_API_URL = 'http://localhost:5001/api';
+
+// Detect if we're in production by checking the hostname
+const isProduction = typeof window !== 'undefined' && 
+  (window.location.hostname === 'email-orchestrator-blond.vercel.app' || 
+   window.location.hostname.includes('.vercel.app'));
+
+// Use production URL if on Vercel, otherwise localhost
+const API_BASE_URL = isProduction ? PRODUCTION_API_URL : DEVELOPMENT_API_URL;
+
+// Debug logging
+console.log('🌍 Hostname:', typeof window !== 'undefined' ? window.location.hostname : 'server');
+console.log('🔧 Is Production:', isProduction);
+console.log('🔗 API Base URL:', API_BASE_URL);
 
 // Create axios instance with default config
 const api = axios.create({
@@ -27,13 +41,11 @@ api.interceptors.request.use(
 
 // Auth API calls
 export const authAPI = {
-  // Login
   login: async (username, password) => {
     const response = await api.post('/auth/login', { username, password });
     return response.data;
   },
   
-  // Verify token
   verifyToken: async () => {
     const response = await api.get('/auth/verify');
     return response.data;
@@ -42,19 +54,16 @@ export const authAPI = {
 
 // Merchant API calls
 export const merchantAPI = {
-  // Get all merchants
   getAll: async () => {
     const response = await api.get('/merchants');
     return response.data;
   },
   
-  // Get single merchant by ID
   getById: async (id) => {
     const response = await api.get(`/merchants/${id}`);
     return response.data;
   },
   
-  // Test Gmail connection
   testGmail: async (gmail_username, gmail_app_password) => {
     const response = await api.post('/merchants/test-gmail', {
       gmail_username,
@@ -63,19 +72,16 @@ export const merchantAPI = {
     return response.data;
   },
   
-  // Create new merchant
   create: async (merchantData) => {
     const response = await api.post('/merchants', merchantData);
     return response.data;
   },
   
-  // Update merchant
   update: async (id, merchantData) => {
     const response = await api.put(`/merchants/${id}`, merchantData);
     return response.data;
   },
   
-  // Delete merchant
   delete: async (id) => {
     const response = await api.delete(`/merchants/${id}`);
     return response.data;
@@ -84,25 +90,21 @@ export const merchantAPI = {
 
 // Email API calls
 export const emailAPI = {
-  // Fetch emails from Gmail for a merchant
   fetchEmails: async (merchantId) => {
     const response = await api.post(`/emails/fetch/${merchantId}`);
     return response.data;
   },
   
-  // Get all emails for a merchant
   getMerchantEmails: async (merchantId) => {
     const response = await api.get(`/emails/merchant/${merchantId}`);
     return response.data;
   },
   
-  // Get all threads for a merchant
   getMerchantThreads: async (merchantId) => {
     const response = await api.get(`/emails/threads/${merchantId}`);
     return response.data;
   },
   
-  // Get all emails in a specific thread
   getThreadEmails: async (threadId) => {
     const response = await api.get(`/emails/thread/${threadId}`);
     return response.data;
@@ -111,37 +113,31 @@ export const emailAPI = {
 
 // Scheduler API calls
 export const schedulerAPI = {
-  // Start scheduler for all merchants
   start: async () => {
     const response = await api.post('/scheduler/start');
     return response.data;
   },
   
-  // Stop scheduler for all merchants
   stop: async () => {
     const response = await api.post('/scheduler/stop');
     return response.data;
   },
   
-  // Get scheduler status
   getStatus: async () => {
     const response = await api.get('/scheduler/status');
     return response.data;
   },
   
-  // Restart scheduler
   restart: async () => {
     const response = await api.post('/scheduler/restart');
     return response.data;
   },
   
-  // Start scheduler for specific merchant
   startMerchant: async (merchantId) => {
     const response = await api.post(`/scheduler/merchant/${merchantId}/start`);
     return response.data;
   },
   
-  // Stop scheduler for specific merchant
   stopMerchant: async (merchantId) => {
     const response = await api.post(`/scheduler/merchant/${merchantId}/stop`);
     return response.data;
