@@ -19,8 +19,8 @@ class GatewayDetector {
       keywords: ['paytm', 'merchant id', 'paytm payments', 'paytm business']
     },
     virtualpay: {
-      domains: ['virtual-pay.io', 'virtualpay.io'],
-      keywords: ['virtual pay', 'virtualpay', 'onboarding', 'merchant account']
+      domains: ['virtual-pay.io', 'virtualpay.io', 'virtualpay.com'],
+      keywords: ['virtual pay', 'virtualpay', 'virtual-pay', 'onboarding', 'merchant account']
     }
   };
 
@@ -57,14 +57,17 @@ class GatewayDetector {
   static detectGateway(email, selectedGateways = []) {
     if (!email) return null;
 
-    const fromEmail = email.from?.address?.toLowerCase() || '';
+    const fromEmail = email.from?.address?.toLowerCase() || email.from_email?.toLowerCase() || '';
     const toEmails = (email.to || []).map(t => t.address?.toLowerCase() || '').join(' ');
     const ccEmails = (email.cc || []).map(c => c.address?.toLowerCase() || '').join(' ');
     const subject = (email.subject || '').toLowerCase();
-    const text = (email.text || '').toLowerCase();
-    const html = (email.html || '').toLowerCase();
+    const text = (email.text || email.body_text || '').toLowerCase();
+    const html = (email.html || email.body_html || '').toLowerCase();
     
     const allContent = `${fromEmail} ${toEmails} ${ccEmails} ${subject} ${text} ${html}`;
+
+    console.log(`🔍 Detecting gateway for email: "${subject.substring(0, 50)}..."`);
+    console.log(`📧 From: ${fromEmail}`);
 
     // Check each gateway
     for (const [gatewayId, config] of Object.entries(this.gateways)) {
@@ -73,28 +76,43 @@ class GatewayDetector {
         continue;
       }
 
-      // Check domain in from/to/cc
+      let gatewayScore = 0;
+
+      // Check domain in from/to/cc (HIGH confidence - 5 points)
       const domainMatch = config.domains.some(domain => 
         allContent.includes(domain)
       );
-
       if (domainMatch) {
-        // Also check if it's onboarding related
-        if (this.isOnboardingEmail(allContent)) {
-          return gatewayId;
-        }
+        gatewayScore += 5;
+        console.log(`  ✓ Domain match for ${gatewayId}: +5 points`);
       }
 
-      // Check keywords (at least 2 matches)
+      // Check keywords (1 point each)
       const keywordMatches = config.keywords.filter(keyword => 
         allContent.includes(keyword.toLowerCase())
+      );
+      gatewayScore += keywordMatches.length;
+      
+      if (keywordMatches.length > 0) {
+        console.log(`  ✓ ${keywordMatches.length} keyword matches for ${gatewayId}: ${keywordMatches.join(', ')}`);
+      }
+
+      // Check onboarding keywords
+      const onboardingMatches = this.onboardingKeywords.filter(keyword => 
+        allContent.includes(keyword)
       ).length;
 
-      if (keywordMatches >= 2 && this.isOnboardingEmail(allContent)) {
+      console.log(`  📊 ${gatewayId} - Gateway score: ${gatewayScore}, Onboarding keywords: ${onboardingMatches}`);
+
+      // LENIENT DETECTION: Need just 2 gateway keywords + 1 onboarding keyword
+      // OR domain match + 1 onboarding keyword
+      if ((gatewayScore >= 2 && onboardingMatches >= 1) || (domainMatch && onboardingMatches >= 1)) {
+        console.log(`  ✅ DETECTED as ${gatewayId}!`);
         return gatewayId;
       }
     }
 
+    console.log(`  ❌ No gateway detected`);
     return null;
   }
 
@@ -111,8 +129,8 @@ class GatewayDetector {
       lowerContent.includes(keyword)
     ).length;
 
-    // At least 2 onboarding keywords required
-    return matches >= 2;
+    // At least 1 onboarding keyword required (more lenient)
+    return matches >= 1;
   }
 
   /**
@@ -126,7 +144,7 @@ class GatewayDetector {
       payu: 'PayU',
       cashfree: 'Cashfree',
       paytm: 'Paytm',
-      virtualpay: 'Virtual Pay'
+      virtualpay: 'VirtualPay'
     };
     return names[gatewayId] || gatewayId;
   }
@@ -138,7 +156,7 @@ class GatewayDetector {
    */
   static extractVendorEmail(email) {
     // Assume vendor is the sender for inbound emails
-    return email.from?.address || '';
+    return email.from?.address || email.from_email || '';
   }
 
   /**
@@ -147,7 +165,7 @@ class GatewayDetector {
    * @returns {String}
    */
   static extractVendorName(email) {
-    return email.from?.name || email.from?.address || 'Unknown';
+    return email.from?.name || email.from_name || email.from?.address || email.from_email || 'Unknown';
   }
 }
 
