@@ -1,20 +1,26 @@
 import pg from 'pg';
-import dotenv from 'dotenv';
-
-dotenv.config();
 
 const { Pool } = pg;
 
-// Create PostgreSQL connection pool
+// Debug: Log environment variables
+console.log('🔍 NODE_ENV:', process.env.NODE_ENV);
+console.log('🔍 DATABASE_URL exists:', !!process.env.DATABASE_URL);
+console.log('🔍 DATABASE_URL (first 50 chars):', process.env.DATABASE_URL?.substring(0, 50));
+
+// Get DATABASE_URL from environment
+const databaseUrl = process.env.DATABASE_URL;
+
+if (!databaseUrl) {
+  console.error('❌ DATABASE_URL is not set!');
+  process.exit(1);
+}
+
+// Create pool with connection string
 const pool = new Pool({
-  host: process.env.DB_HOST || 'localhost',
-  port: process.env.DB_PORT || 5432,
-  database: process.env.DB_NAME || 'email_orchestrator',
-  user: process.env.DB_USER || 'postgres',
-  password: process.env.DB_PASSWORD,
-  max: 20, // Maximum number of connections
-  idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 2000,
+  connectionString: databaseUrl,
+  ssl: {
+    rejectUnauthorized: false
+  }
 });
 
 // Test connection
@@ -23,17 +29,19 @@ pool.on('connect', () => {
 });
 
 pool.on('error', (err) => {
-  console.error('❌ Unexpected error on idle client', err);
+  console.error('❌ Unexpected error on idle client:', err);
   process.exit(-1);
 });
 
-// Query helper function
-export const query = async (text, params) => {
-  const start = Date.now();
-  const res = await pool.query(text, params);
-  const duration = Date.now() - start;
-  console.log('Executed query', { text, duration, rows: res.rowCount });
-  return res;
-};
+// Test connection immediately
+(async () => {
+  try {
+    const client = await pool.connect();
+    console.log('✅ Database connection test successful');
+    client.release();
+  } catch (err) {
+    console.error('❌ Database connection test failed:', err);
+  }
+})();
 
 export default pool;
