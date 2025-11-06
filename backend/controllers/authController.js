@@ -16,10 +16,7 @@ export const login = async (req, res) => {
     }
     
     // Find admin user
-    const result = await pool.query(
-      'SELECT * FROM admins WHERE username = $1',
-      [username]
-    );
+   const result = await pool.query('SELECT * FROM users WHERE username = $1', [username]);
     
     if (result.rows.length === 0) {
       return res.status(401).json({ 
