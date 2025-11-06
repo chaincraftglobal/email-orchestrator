@@ -120,30 +120,39 @@ export const createMerchant = async (req, res) => {
     if (!company_name || !gmail_username || !gmail_app_password || !admin_reminder_email) {
       return res.status(400).json({
         success: false,
-        message: 'All required fields must be provided'
+        message: 'Missing required fields'
       });
     }
     
-    // Insert merchant
+    // Validate selected_gateways is an array
+    if (!Array.isArray(selected_gateways) || selected_gateways.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'At least one payment gateway must be selected'
+      });
+    }
+    
+    // Insert merchant - PostgreSQL will handle array conversion automatically with $X notation
     const result = await pool.query(
       `INSERT INTO merchants (
-        company_name, gmail_username, gmail_app_password, 
-        selected_gateways, admin_reminder_email, 
+        company_name, gmail_username, gmail_app_password,
+        selected_gateways, admin_reminder_email,
         self_reminder_time, vendor_followup_time, email_check_frequency
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      RETURNING *`,
       [
         company_name,
         gmail_username,
         gmail_app_password,
-        JSON.stringify(selected_gateways || []),
+        selected_gateways, // PostgreSQL will convert JS array automatically
         admin_reminder_email,
-        self_reminder_time || 30,
-        vendor_followup_time || 180,
+        self_reminder_time || 360,
+        vendor_followup_time || 1440,
         email_check_frequency || 30
       ]
     );
     
-    res.status(201).json({
+    res.json({
       success: true,
       message: 'Merchant created successfully',
       merchant: result.rows[0]
@@ -153,7 +162,8 @@ export const createMerchant = async (req, res) => {
     console.error('Create merchant error:', error);
     res.status(500).json({
       success: false,
-      message: 'Failed to create merchant'
+      message: 'Failed to create merchant',
+      error: error.message
     });
   }
 };
