@@ -12,8 +12,7 @@ class ReminderChecker {
       const result = await pool.query(
         `SELECT * FROM email_threads 
          WHERE merchant_id = $1 
-         AND status = 'waiting_on_us' 
-         AND is_hot = false
+         AND status = 'waiting_on_us'
          ORDER BY last_activity_at ASC`,
         [merchant.id]
       );
@@ -39,16 +38,27 @@ class ReminderChecker {
         const now = new Date();
         const minutesSinceInbound = Math.floor((now - lastInbound) / 60000);
         
-        // Check if self-reminder time has passed
-        if (minutesSinceInbound >= merchant.self_reminder_time) {
+        // First reminder: after self_reminder_time (e.g., 30 min)
+        // Subsequent reminders: every 6 hours
+        const shouldSendReminder = this.shouldSendReminder(
+          thread,
+          minutesSinceInbound,
+          merchant.self_reminder_time
+        );
+        
+        if (shouldSendReminder) {
           console.log(`⚠️ Thread "${thread.subject}" needs reminder (${minutesSinceInbound} min since vendor email)`);
           
           // Send reminder email
           await this.sendSelfReminder(merchant, thread);
           
-          // Mark thread as hot
+          // Mark thread as hot and update reminder count
           await pool.query(
-            'UPDATE email_threads SET is_hot = true WHERE id = $1',
+            `UPDATE email_threads 
+             SET is_hot = true, 
+                 self_reminder_sent_count = COALESCE(self_reminder_sent_count, 0) + 1,
+                 last_self_reminder_at = NOW()
+             WHERE id = $1`,
             [thread.id]
           );
           
@@ -65,6 +75,22 @@ class ReminderChecker {
     } catch (error) {
       console.error('Error checking reminders:', error);
     }
+  }
+  
+  // Determine if reminder should be sent
+  shouldSendReminder(thread, minutesSinceInbound, selfReminderTime) {
+    // First reminder: after selfReminderTime (e.g., 30 min)
+    if (!thread.last_self_reminder_at) {
+      return minutesSinceInbound >= selfReminderTime;
+    }
+    
+    // Subsequent reminders: every 6 hours (360 min)
+    const lastReminder = new Date(thread.last_self_reminder_at);
+    const now = new Date();
+    const minutesSinceLastReminder = Math.floor((now - lastReminder) / 60000);
+    
+    // Send reminder every 6 hours
+    return minutesSinceLastReminder >= 360;
   }
   
   // Send self-reminder email to admin
@@ -84,14 +110,16 @@ class ReminderChecker {
       const now = new Date();
       const hoursSinceInbound = Math.floor((now - lastInbound) / 3600000);
       
+      const reminderCount = (thread.self_reminder_sent_count || 0) + 1;
+      
       // Email content
-      const subject = `⚠️ Reminder: Reply Pending - ${thread.subject}`;
+      const subject = `⚠️ Reminder #${reminderCount}: Reply Pending - ${thread.subject}`;
       const html = `
         <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
           <h2 style="color: #f59e0b;">⚠️ Self-Reminder: Reply Needed</h2>
           
           <div style="background-color: #fef3c7; border-left: 4px solid #f59e0b; padding: 15px; margin: 20px 0;">
-            <p style="margin: 0;"><strong>You haven't replied to this vendor email yet!</strong></p>
+            <p style="margin: 0;"><strong>Reminder #${reminderCount}: You haven't replied to this vendor email yet!</strong></p>
           </div>
           
           <h3>Thread Details:</h3>
@@ -124,7 +152,8 @@ class ReminderChecker {
           <p style="color: #666; font-size: 14px;">
             This is an automated reminder from Email Orchestrator.<br>
             Merchant: ${merchant.company_name}<br>
-            Reminder setting: ${merchant.self_reminder_time} minutes
+            Reminder setting: ${merchant.self_reminder_time} minutes<br>
+            Total reminders sent: ${reminderCount}
           </p>
         </div>
       `;
@@ -137,7 +166,7 @@ class ReminderChecker {
         html: html
       });
       
-      console.log(`✉️ Sent self-reminder to ${merchant.admin_reminder_email}`);
+      console.log(`✉️ Sent self-reminder #${reminderCount} to ${merchant.admin_reminder_email}`);
       
     } catch (error) {
       console.error('Error sending self-reminder:', error);
@@ -149,13 +178,13 @@ class ReminderChecker {
     const now = new Date();
     
     // Convert to IST (UTC +5:30)
-    const istOffset = 5.5 * 60 * 60 * 1000; // 5 hours 30 minutes in milliseconds
+    const istOffset = 5.5 * 60 * 60 * 1000;
     const istTime = new Date(now.getTime() + istOffset);
     
-    const day = istTime.getUTCDay(); // 0 = Sunday, 6 = Saturday
+    const day = istTime.getUTCDay();
     const hour = istTime.getUTCHours();
     
-    // Check if Sunday (day 0)
+    // Check if Sunday
     if (day === 0) {
       return false;
     }
