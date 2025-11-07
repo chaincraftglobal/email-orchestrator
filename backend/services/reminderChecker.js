@@ -50,19 +50,21 @@ class ReminderChecker {
           console.log(`⚠️ Thread "${thread.subject}" needs reminder (${minutesSinceInbound} min since vendor email)`);
           
           // Send reminder email
-          await this.sendSelfReminder(merchant, thread);
+          const emailSent = await this.sendSelfReminder(merchant, thread);
           
-          // Mark thread as hot and update reminder count
-          await pool.query(
-            `UPDATE email_threads 
-             SET is_hot = true, 
-                 self_reminder_sent_count = COALESCE(self_reminder_sent_count, 0) + 1,
-                 last_self_reminder_at = NOW()
-             WHERE id = $1`,
-            [thread.id]
-          );
-          
-          remindersSent++;
+          if (emailSent) {
+            // Mark thread as hot and update reminder count
+            await pool.query(
+              `UPDATE email_threads 
+               SET is_hot = true, 
+                   self_reminder_sent_count = COALESCE(self_reminder_sent_count, 0) + 1,
+                   last_self_reminder_at = NOW()
+               WHERE id = $1`,
+              [thread.id]
+            );
+            
+            remindersSent++;
+          }
         }
       }
       
@@ -96,13 +98,22 @@ class ReminderChecker {
   // Send self-reminder email to admin
   async sendSelfReminder(merchant, thread) {
     try {
-      // Create email transporter (using Gmail SMTP)
+      console.log(`📤 Attempting to send reminder email...`);
+      
+      // Create email transporter with timeout and fallback settings
       const transporter = nodemailer.createTransport({
-        service: 'gmail',
+        host: 'smtp.gmail.com',
+        port: 587,
+        secure: false, // Use STARTTLS
         auth: {
           user: merchant.gmail_username,
           pass: merchant.gmail_app_password
-        }
+        },
+        connectionTimeout: 30000, // 30 seconds
+        greetingTimeout: 30000,
+        socketTimeout: 30000,
+        logger: true, // Enable logging
+        debug: false // Disable debug for cleaner logs
       });
       
       // Calculate time since last inbound
@@ -159,7 +170,7 @@ class ReminderChecker {
       `;
       
       // Send email
-      await transporter.sendMail({
+      const info = await transporter.sendMail({
         from: `"Email Orchestrator" <${merchant.gmail_username}>`,
         to: merchant.admin_reminder_email,
         subject: subject,
@@ -167,9 +178,21 @@ class ReminderChecker {
       });
       
       console.log(`✉️ Sent self-reminder #${reminderCount} to ${merchant.admin_reminder_email}`);
+      console.log(`📧 Message ID: ${info.messageId}`);
+      
+      return true;
       
     } catch (error) {
-      console.error('Error sending self-reminder:', error);
+      console.error('❌ Error sending self-reminder:', error.message);
+      
+      // Log specific error details
+      if (error.code === 'ETIMEDOUT') {
+        console.error('⚠️ SMTP connection timeout - Railway may be blocking Gmail SMTP');
+      } else if (error.code === 'EAUTH') {
+        console.error('⚠️ Gmail authentication failed - check app password');
+      }
+      
+      return false;
     }
   }
   
@@ -184,16 +207,21 @@ class ReminderChecker {
     const day = istTime.getUTCDay();
     const hour = istTime.getUTCHours();
     
+    console.log(`⏰ Current IST time: ${istTime.toISOString().slice(11, 19)} IST (Day: ${day}, Hour: ${hour})`);
+    
     // Check if Sunday
     if (day === 0) {
+      console.log('⏸️ Today is Sunday - outside working hours');
       return false;
     }
     
     // Check if within 9 AM - 7 PM IST
     if (hour < 9 || hour >= 19) {
+      console.log(`⏸️ Hour ${hour} is outside 9 AM - 7 PM IST`);
       return false;
     }
     
+    console.log('✅ Within working hours');
     return true;
   }
 }
