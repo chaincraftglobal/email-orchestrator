@@ -3,7 +3,8 @@ import {
   fetchEmailsForMerchant,
   getMerchantThreads,
   getThreadEmails,
-  getMerchantEmails
+  getMerchantEmails,
+  getRecentThreads
 } from '../controllers/emailController.js';
 import { authenticateToken } from '../middleware/auth.js';
 
@@ -11,6 +12,9 @@ const router = express.Router();
 
 // All routes require authentication
 router.use(authenticateToken);
+
+// Get recent threads across ALL merchants
+router.get('/recent', getRecentThreads);
 
 // Fetch emails for merchant (manual trigger)
 router.post('/fetch/:merchantId', fetchEmailsForMerchant);

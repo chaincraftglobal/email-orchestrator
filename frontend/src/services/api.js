@@ -6,7 +6,7 @@ const DEVELOPMENT_API_URL = 'http://localhost:5001/api';
 
 // Detect if we're in production by checking the hostname
 const isProduction = typeof window !== 'undefined' && 
-  (window.location.hostname === 'email-orchestrator-blond.vercel.app' || 
+  (window.location.hostname === 'email-orchestrator-ten.vercel.app' || 
    window.location.hostname.includes('.vercel.app'));
 
 // Use production URL if on Vercel, otherwise localhost
@@ -107,6 +107,12 @@ export const emailAPI = {
   
   getThreadEmails: async (threadId) => {
     const response = await api.get(`/emails/thread/${threadId}`);
+    return response.data;
+  },
+  
+  // Get recent threads across all merchants
+  getRecentThreads: async (limit = 10) => {
+    const response = await api.get(`/emails/recent?limit=${limit}`);
     return response.data;
   },
 };

@@ -146,9 +146,40 @@ export const getMerchantEmails = async (req, res) => {
   }
 };
 
+// Get recent threads across ALL merchants
+export const getRecentThreads = async (req, res) => {
+  try {
+    const limit = req.query.limit || 10;
+    
+    const result = await pool.query(
+      `SELECT 
+        t.*,
+        m.company_name as merchant_name
+       FROM email_threads t
+       JOIN merchants m ON t.merchant_id = m.id
+       ORDER BY t.last_activity_at DESC
+       LIMIT $1`,
+      [limit]
+    );
+    
+    res.json({
+      success: true,
+      threads: result.rows
+    });
+    
+  } catch (error) {
+    console.error('Get recent threads error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to get recent threads'
+    });
+  }
+};
+
 export default {
   fetchEmailsForMerchant,
   getMerchantThreads,
   getThreadEmails,
-  getMerchantEmails
+  getMerchantEmails,
+  getRecentThreads
 };

@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { merchantAPI } from '../services/api';
+import { merchantAPI, emailAPI } from '../services/api';
 import authService from '../services/authService';
 import LogoutButton from '../components/LogoutButton';
 
@@ -13,11 +13,13 @@ function Dashboard() {
     emailsCheckedToday: 0,
     overdueReminders: 0
   });
+  const [recentThreads, setRecentThreads] = useState([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     checkAuth();
     fetchStats();
+    fetchRecentThreads();
   }, []);
 
   const checkAuth = () => {
@@ -38,14 +40,14 @@ function Dashboard() {
         setStats({
           totalMerchants: merchants.length,
           activeMerchants: merchants.filter(m => m.is_active).length,
-          pendingReplies: 0, // Will calculate from threads
+          pendingReplies: 0,
           emailsCheckedToday: merchants.filter(m => {
             if (!m.last_email_check) return false;
             const lastCheck = new Date(m.last_email_check);
             const today = new Date();
             return lastCheck.toDateString() === today.toDateString();
           }).length,
-          overdueReminders: 0 // Will calculate from threads
+          overdueReminders: 0
         });
       }
     } catch (err) {
@@ -53,6 +55,55 @@ function Dashboard() {
     } finally {
       setLoading(false);
     }
+  };
+
+  const fetchRecentThreads = async () => {
+    try {
+      const response = await emailAPI.getRecentThreads(10);
+      if (response.success) {
+        setRecentThreads(response.threads);
+      }
+    } catch (err) {
+      console.error('Failed to fetch recent threads:', err);
+    }
+  };
+
+  const getGatewayBadge = (gateway) => {
+    const badges = {
+      'razorpay': { bg: 'bg-blue-100', text: 'text-blue-800', label: 'Razorpay' },
+      'payu': { bg: 'bg-green-100', text: 'text-green-800', label: 'PayU' },
+      'cashfree': { bg: 'bg-purple-100', text: 'text-purple-800', label: 'Cashfree' },
+      'paytm': { bg: 'bg-indigo-100', text: 'text-indigo-800', label: 'Paytm' },
+      'virtualpay': { bg: 'bg-pink-100', text: 'text-pink-800', label: 'VirtualPay' }
+    };
+    return badges[gateway] || { bg: 'bg-gray-100', text: 'text-gray-800', label: gateway };
+  };
+
+  const getStatusColor = (status) => {
+    const colors = {
+      'waiting_on_us': 'bg-orange-500 text-white',
+      'waiting_on_vendor': 'bg-blue-500 text-white',
+      'completed': 'bg-green-500 text-white',
+      'snoozed': 'bg-gray-500 text-white'
+    };
+    return colors[status] || 'bg-gray-500 text-white';
+  };
+
+  const formatDate = (dateString) => {
+    if (!dateString) return 'Unknown';
+    
+    const date = new Date(dateString);
+    const now = new Date();
+    const diffMs = now - date;
+    const diffMins = Math.floor(diffMs / 60000);
+    const diffHours = Math.floor(diffMs / 3600000);
+    const diffDays = Math.floor(diffMs / 86400000);
+
+    if (diffMins < 60) return `${diffMins} min ago`;
+    if (diffHours < 24) return `${diffHours}h ago`;
+    if (diffDays < 7) return `${diffDays}d ago`;
+    
+    return date.toLocaleDateString();
   };
 
   if (!user) {
@@ -102,35 +153,104 @@ function Dashboard() {
           <div className="bg-white rounded-xl shadow-md p-6 border-l-4 border-orange-500 hover:shadow-lg transition-shadow">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-sm font-medium text-gray-600 uppercase tracking-wide">Pending Replies</p>
-                <p className="text-4xl font-bold text-gray-900 mt-2">{stats.pendingReplies}</p>
-                <p className="text-sm text-gray-500 mt-1">Awaiting response</p>
+                <p className="text-sm font-medium text-gray-600 uppercase tracking-wide">Email Threads</p>
+                <p className="text-4xl font-bold text-gray-900 mt-2">{recentThreads.length}</p>
+                <p className="text-sm text-gray-500 mt-1">Active conversations</p>
               </div>
-              <div className="text-5xl">⏳</div>
+              <div className="text-5xl">💬</div>
             </div>
           </div>
 
           <div className="bg-white rounded-xl shadow-md p-6 border-l-4 border-green-500 hover:shadow-lg transition-shadow">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-sm font-medium text-gray-600 uppercase tracking-wide">Emails Checked Today</p>
+                <p className="text-sm font-medium text-gray-600 uppercase tracking-wide">Checked Today</p>
                 <p className="text-4xl font-bold text-gray-900 mt-2">{stats.emailsCheckedToday}</p>
-                <p className="text-sm text-gray-500 mt-1">Total processed</p>
+                <p className="text-sm text-gray-500 mt-1">Merchants synced</p>
               </div>
               <div className="text-5xl">✅</div>
             </div>
           </div>
 
-          <div className="bg-white rounded-xl shadow-md p-6 border-l-4 border-red-500 hover:shadow-lg transition-shadow">
+          <div className="bg-white rounded-xl shadow-md p-6 border-l-4 border-purple-500 hover:shadow-lg transition-shadow">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-sm font-medium text-gray-600 uppercase tracking-wide">Overdue Reminders</p>
-                <p className="text-4xl font-bold text-gray-900 mt-2">{stats.overdueReminders}</p>
-                <p className="text-sm text-gray-500 mt-1">Need attention</p>
+                <p className="text-sm font-medium text-gray-600 uppercase tracking-wide">Waiting on Us</p>
+                <p className="text-4xl font-bold text-gray-900 mt-2">
+                  {recentThreads.filter(t => t.status === 'waiting_on_us').length}
+                </p>
+                <p className="text-sm text-gray-500 mt-1">Need reply</p>
               </div>
-              <div className="text-5xl">🔥</div>
+              <div className="text-5xl">⏳</div>
             </div>
           </div>
+        </div>
+
+        {/* Recent Email Threads */}
+        <div className="bg-white rounded-xl shadow-md p-8 mb-12">
+          <div className="flex justify-between items-center mb-6">
+            <h2 className="text-2xl font-bold text-gray-900">📬 Latest Email Threads</h2>
+            <button
+              onClick={() => navigate('/merchants')}
+              className="text-blue-600 hover:text-blue-800 font-medium"
+            >
+              View All Merchants →
+            </button>
+          </div>
+          
+          {recentThreads.length === 0 ? (
+            <div className="text-center py-12">
+              <div className="text-6xl mb-4">📭</div>
+              <p className="text-gray-600 mb-4">No email threads yet</p>
+              <button
+                onClick={() => navigate('/merchants')}
+                className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-lg font-medium"
+              >
+                Add Merchant & Fetch Emails
+              </button>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {recentThreads.map((thread) => {
+                const gatewayBadge = getGatewayBadge(thread.gateway);
+                
+                return (
+                  <div
+                    key={thread.id}
+                    onClick={() => navigate(`/thread/${thread.id}`)}
+                    className="p-4 border border-gray-200 rounded-lg hover:border-blue-400 hover:shadow-md transition-all cursor-pointer bg-gray-50 hover:bg-white"
+                  >
+                    <div className="flex justify-between items-start">
+                      <div className="flex-1">
+                        <div className="flex items-center gap-3 mb-2">
+                          <span className={`px-3 py-1 rounded-full text-xs font-bold ${gatewayBadge.bg} ${gatewayBadge.text}`}>
+                            {gatewayBadge.label}
+                          </span>
+                          <span className="text-sm font-medium text-gray-600">
+                            {thread.merchant_name}
+                          </span>
+                          {thread.is_hot && (
+                            <span className="px-2 py-1 bg-red-100 text-red-800 text-xs font-bold rounded">
+                              🔥 Hot
+                            </span>
+                          )}
+                        </div>
+                        <h4 className="font-semibold text-gray-900 mb-1 hover:text-blue-600">
+                          {thread.subject}
+                        </h4>
+                        <p className="text-sm text-gray-600">
+                          {thread.vendor_name} • {formatDate(thread.last_activity_at)}
+                        </p>
+                      </div>
+                      <span className={`px-3 py-1 rounded-full text-xs font-medium ${getStatusColor(thread.status)}`}>
+                        {thread.status === 'waiting_on_us' ? 'Reply Needed' : 'Waiting on Vendor'}
+                      </span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
 
         {/* Quick Actions */}
@@ -181,7 +301,7 @@ function Dashboard() {
             </p>
             <p className="flex items-start gap-3">
               <span className="text-2xl">4️⃣</span>
-              <span><strong>Track threads</strong> in the email viewer to see all conversations with vendors</span>
+              <span><strong>Click any thread above</strong> to view the full conversation and reply</span>
             </p>
           </div>
         </div>
