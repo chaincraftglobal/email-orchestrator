@@ -110,9 +110,13 @@ export const emailAPI = {
     return response.data;
   },
   
-  // Get recent threads across all merchants
   getRecentThreads: async (limit = 10) => {
     const response = await api.get(`/emails/recent?limit=${limit}`);
+    return response.data;
+  },
+  
+  testReminder: async (merchantId) => {
+    const response = await api.post(`/emails/test-reminder/${merchantId}`);
     return response.data;
   },
 };

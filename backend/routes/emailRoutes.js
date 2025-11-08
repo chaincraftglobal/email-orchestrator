@@ -4,7 +4,8 @@ import {
   getMerchantThreads,
   getThreadEmails,
   getMerchantEmails,
-  getRecentThreads
+  getRecentThreads,
+  testReminderEmail
 } from '../controllers/emailController.js';
 import { authenticateToken } from '../middleware/auth.js';
 
@@ -12,6 +13,9 @@ const router = express.Router();
 
 // All routes require authentication
 router.use(authenticateToken);
+
+// Test reminder email (bypasses working hours)
+router.post('/test-reminder/:merchantId', testReminderEmail);
 
 // Get recent threads across ALL merchants
 router.get('/recent', getRecentThreads);

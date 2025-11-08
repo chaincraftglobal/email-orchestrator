@@ -9,7 +9,8 @@ function Merchants() {
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const [deleteConfirm, setDeleteConfirm] = useState(null);
-  const [fetchingEmails, setFetchingEmails] = useState(null); // Track which merchant is fetching
+  const [fetchingEmails, setFetchingEmails] = useState(null);
+  const [testingEmail, setTestingEmail] = useState(null);
 
   useEffect(() => {
     fetchMerchants();
@@ -41,7 +42,6 @@ function Merchants() {
       if (response.success) {
         setSuccess(`✅ ${companyName}: ${response.message}`);
         
-        // Update last_email_check for this merchant
         setMerchants(merchants.map(m => 
           m.id === merchantId 
             ? { ...m, last_email_check: new Date().toISOString() }
@@ -53,6 +53,25 @@ function Merchants() {
       console.error(err);
     } finally {
       setFetchingEmails(null);
+    }
+  };
+
+  const handleTestEmail = async (merchantId, companyName, adminEmail) => {
+    try {
+      setTestingEmail(merchantId);
+      setError('');
+      setSuccess('');
+      
+      const response = await emailAPI.testReminder(merchantId);
+      
+      if (response.success) {
+        setSuccess(`🎉 Test email sent to ${adminEmail}! Check your inbox.`);
+      }
+    } catch (err) {
+      setError(`Failed to send test email: ${err.response?.data?.message || err.message}`);
+      console.error(err);
+    } finally {
+      setTestingEmail(null);
     }
   };
 
@@ -68,12 +87,6 @@ function Merchants() {
       setError('Failed to delete merchant');
       console.error(err);
     }
-  };
-
-  const formatTime = (minutes) => {
-    if (minutes < 60) return `${minutes} min`;
-    const hours = minutes / 60;
-    return `${hours} hr${hours > 1 ? 's' : ''}`;
   };
 
   const formatDate = (dateString) => {
@@ -169,8 +182,11 @@ function Merchants() {
                       <div className="text-sm font-medium text-gray-900">
                         {merchant.company_name}
                       </div>
-                      <div className="text-sm text-gray-500">
-                        {merchant.admin_reminder_email}
+                      <div className="flex items-center gap-2 mt-1">
+                        <span className="text-xs text-gray-500">Admin:</span>
+                        <span className="px-2 py-0.5 text-xs font-medium rounded-full bg-purple-100 text-purple-700">
+                          {merchant.admin_reminder_email}
+                        </span>
                       </div>
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap">
@@ -205,31 +221,44 @@ function Merchants() {
                       </span>
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
-                      <button
-                        onClick={() => handleFetchEmails(merchant.id, merchant.company_name)}
-                        disabled={fetchingEmails === merchant.id}
-                        className="text-purple-600 hover:text-purple-900 mr-4 disabled:opacity-50"
-                      >
-                        {fetchingEmails === merchant.id ? '⏳ Fetching...' : '📧 Fetch Emails'}
-                      </button>
-                      <button
-                        onClick={() => navigate(`/emails/${merchant.id}`)}
-                        className="text-green-600 hover:text-green-900 mr-4"
-                      >
-                        👁️ View
-                      </button>
-                      <button
-                        onClick={() => navigate(`/edit-merchant/${merchant.id}`)}
-                        className="text-blue-600 hover:text-blue-900 mr-4"
-                      >
-                        Edit
-                      </button>
-                      <button
-                        onClick={() => setDeleteConfirm(merchant.id)}
-                        className="text-red-600 hover:text-red-900"
-                      >
-                        Delete
-                      </button>
+                      <div className="flex flex-col gap-2">
+                        <div className="flex gap-2">
+                          <button
+                            onClick={() => handleFetchEmails(merchant.id, merchant.company_name)}
+                            disabled={fetchingEmails === merchant.id}
+                            className="text-purple-600 hover:text-purple-900 disabled:opacity-50"
+                          >
+                            {fetchingEmails === merchant.id ? '⏳ Fetching...' : '📧 Fetch Emails'}
+                          </button>
+                          <button
+                            onClick={() => handleTestEmail(merchant.id, merchant.company_name, merchant.admin_reminder_email)}
+                            disabled={testingEmail === merchant.id}
+                            className="text-orange-600 hover:text-orange-900 disabled:opacity-50"
+                          >
+                            {testingEmail === merchant.id ? '⏳ Sending...' : '🧪 Test Email'}
+                          </button>
+                        </div>
+                        <div className="flex gap-2">
+                          <button
+                            onClick={() => navigate(`/emails/${merchant.id}`)}
+                            className="text-green-600 hover:text-green-900"
+                          >
+                            👁️ View
+                          </button>
+                          <button
+                            onClick={() => navigate(`/edit-merchant/${merchant.id}`)}
+                            className="text-blue-600 hover:text-blue-900"
+                          >
+                            Edit
+                          </button>
+                          <button
+                            onClick={() => setDeleteConfirm(merchant.id)}
+                            className="text-red-600 hover:text-red-900"
+                          >
+                            Delete
+                          </button>
+                        </div>
+                      </div>
                     </td>
                   </tr>
                 ))}
