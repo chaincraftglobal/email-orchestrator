@@ -1,7 +1,17 @@
 import pool from '../config/database.js';
-import nodemailer from 'nodemailer';
+import sgMail from '@sendgrid/mail';
 
 class ReminderChecker {
+  
+  constructor() {
+    // Initialize SendGrid (only if API key exists)
+    if (process.env.SENDGRID_API_KEY) {
+      sgMail.setApiKey(process.env.SENDGRID_API_KEY);
+      console.log('✅ SendGrid initialized');
+    } else {
+      console.log('⚠️ No SendGrid API key - email reminders disabled');
+    }
+  }
   
   // Check all threads for a merchant and send reminders if needed
   async checkThreadsForReminders(merchant) {
@@ -95,26 +105,15 @@ class ReminderChecker {
     return minutesSinceLastReminder >= 360;
   }
   
-  // Send self-reminder email to admin
+  // Send self-reminder email to admin using SendGrid
   async sendSelfReminder(merchant, thread) {
     try {
-      console.log(`📤 Attempting to send reminder email...`);
+      if (!process.env.SENDGRID_API_KEY) {
+        console.log('⚠️ SendGrid not configured - skipping email');
+        return false;
+      }
       
-      // Create email transporter with timeout and fallback settings
-      const transporter = nodemailer.createTransport({
-        host: 'smtp.gmail.com',
-        port: 587,
-        secure: false, // Use STARTTLS
-        auth: {
-          user: merchant.gmail_username,
-          pass: merchant.gmail_app_password
-        },
-        connectionTimeout: 30000, // 30 seconds
-        greetingTimeout: 30000,
-        socketTimeout: 30000,
-        logger: true, // Enable logging
-        debug: false // Disable debug for cleaner logs
-      });
+      console.log(`📤 Sending reminder via SendGrid...`);
       
       // Calculate time since last inbound
       const lastInbound = new Date(thread.last_inbound_at);
@@ -169,29 +168,25 @@ class ReminderChecker {
         </div>
       `;
       
-      // Send email
-      const info = await transporter.sendMail({
-        from: `"Email Orchestrator" <${merchant.gmail_username}>`,
+      // Send email via SendGrid
+      const msg = {
         to: merchant.admin_reminder_email,
+        from: process.env.SENDGRID_FROM_EMAIL || 'noreply@emailorchestrator.com',
         subject: subject,
         html: html
-      });
+      };
       
-      console.log(`✉️ Sent self-reminder #${reminderCount} to ${merchant.admin_reminder_email}`);
-      console.log(`📧 Message ID: ${info.messageId}`);
+      await sgMail.send(msg);
+      
+      console.log(`✉️ Sent self-reminder #${reminderCount} to ${merchant.admin_reminder_email} via SendGrid`);
       
       return true;
       
     } catch (error) {
       console.error('❌ Error sending self-reminder:', error.message);
-      
-      // Log specific error details
-      if (error.code === 'ETIMEDOUT') {
-        console.error('⚠️ SMTP connection timeout - Railway may be blocking Gmail SMTP');
-      } else if (error.code === 'EAUTH') {
-        console.error('⚠️ Gmail authentication failed - check app password');
+      if (error.response) {
+        console.error('SendGrid error:', error.response.body);
       }
-      
       return false;
     }
   }

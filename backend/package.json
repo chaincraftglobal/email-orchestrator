@@ -10,19 +10,20 @@
     "db:init": "node config/init-db.js"
   },
   "dependencies": {
-    "express": "^4.18.2",
-    "cors": "^2.8.5",
-    "dotenv": "^16.3.1",
-    "pg": "^8.11.3",
+    "@sendgrid/mail": "^8.1.6",
     "bcryptjs": "^2.4.3",
-    "jsonwebtoken": "^9.0.2",
-    "imap": "^0.8.19",
-    "mailparser": "^3.6.5",
-    "nodemailer": "^6.9.7",
-    "node-cron": "^3.0.3",
-    "openai": "^4.20.1",
+    "cors": "^2.8.5",
     "date-fns": "^2.30.0",
-    "date-fns-tz": "^2.0.0"
+    "date-fns-tz": "^2.0.0",
+    "dotenv": "^16.3.1",
+    "express": "^4.18.2",
+    "imap": "^0.8.19",
+    "jsonwebtoken": "^9.0.2",
+    "mailparser": "^3.6.5",
+    "node-cron": "^3.0.3",
+    "nodemailer": "^6.9.7",
+    "openai": "^4.20.1",
+    "pg": "^8.11.3"
   },
   "devDependencies": {
     "nodemon": "^3.0.1"
