@@ -176,6 +176,7 @@ export const updateMerchant = async (req, res) => {
       is_active
     } = req.body;
     
+    // Convert selected_gateways to JSON
     let gatewaysJson;
     if (typeof selected_gateways === 'string') {
       try {
@@ -189,8 +190,13 @@ export const updateMerchant = async (req, res) => {
       gatewaysJson = JSON.stringify([]);
     }
     
-    const result = await pool.query(
-      `UPDATE merchants 
+    // Build dynamic query - only update password if provided
+    let query;
+    let params;
+    
+    if (gmail_app_password && gmail_app_password.trim() !== '') {
+      // Update WITH password
+      query = `UPDATE merchants 
        SET company_name = $1,
            gmail_username = $2,
            gmail_app_password = $3,
@@ -202,11 +208,12 @@ export const updateMerchant = async (req, res) => {
            is_active = $9,
            updated_at = NOW()
        WHERE id = $10
-       RETURNING *`,
-      [
+       RETURNING *`;
+      
+      params = [
         company_name,
         gmail_username,
-        gmail_app_password || null,
+        gmail_app_password,
         admin_reminder_email,
         self_reminder_time,
         vendor_reminder_time,
@@ -214,8 +221,36 @@ export const updateMerchant = async (req, res) => {
         gatewaysJson,
         is_active,
         id
-      ]
-    );
+      ];
+    } else {
+      // Update WITHOUT password (keep existing)
+      query = `UPDATE merchants 
+       SET company_name = $1,
+           gmail_username = $2,
+           admin_reminder_email = $3,
+           self_reminder_time = $4,
+           vendor_reminder_time = $5,
+           email_check_frequency = $6,
+           selected_gateways = $7::jsonb,
+           is_active = $8,
+           updated_at = NOW()
+       WHERE id = $9
+       RETURNING *`;
+      
+      params = [
+        company_name,
+        gmail_username,
+        admin_reminder_email,
+        self_reminder_time,
+        vendor_reminder_time,
+        email_check_frequency,
+        gatewaysJson,
+        is_active,
+        id
+      ];
+    }
+    
+    const result = await pool.query(query, params);
     
     if (result.rows.length === 0) {
       return res.status(404).json({
@@ -239,7 +274,6 @@ export const updateMerchant = async (req, res) => {
     });
   }
 };
-
 // Delete merchant
 export const deleteMerchant = async (req, res) => {
   try {
