@@ -109,50 +109,39 @@ export const createMerchant = async (req, res) => {
       company_name,
       gmail_username,
       gmail_app_password,
-      selected_gateways,
       admin_reminder_email,
       self_reminder_time,
-      vendor_followup_time,
-      email_check_frequency
+      vendor_reminder_time,
+      email_check_frequency,
+      selected_gateways
     } = req.body;
     
-    // Validate required fields
-    if (!company_name || !gmail_username || !gmail_app_password || !admin_reminder_email) {
-      return res.status(400).json({
-        success: false,
-        message: 'Missing required fields'
-      });
-    }
+    // Convert selected_gateways to JSON
+    const gatewaysJson = Array.isArray(selected_gateways) 
+      ? JSON.stringify(selected_gateways)
+      : JSON.stringify([]);
     
-    // Validate selected_gateways is an array
-    if (!Array.isArray(selected_gateways) || selected_gateways.length === 0) {
-      return res.status(400).json({
-        success: false,
-        message: 'At least one payment gateway must be selected'
-      });
-    }
-    
-    // Insert merchant - PostgreSQL will handle array conversion automatically with $X notation
     const result = await pool.query(
       `INSERT INTO merchants (
         company_name, gmail_username, gmail_app_password,
-        selected_gateways, admin_reminder_email,
-        self_reminder_time, vendor_followup_time, email_check_frequency
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        admin_reminder_email, self_reminder_time, vendor_reminder_time,
+        email_check_frequency, selected_gateways, is_active
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9)
       RETURNING *`,
       [
         company_name,
         gmail_username,
         gmail_app_password,
-        selected_gateways, // PostgreSQL will convert JS array automatically
         admin_reminder_email,
-        self_reminder_time || 360,
-        vendor_followup_time || 1440,
-        email_check_frequency || 30
+        self_reminder_time,
+        vendor_reminder_time,
+        email_check_frequency,
+        gatewaysJson,  // ← Properly formatted
+        true
       ]
     );
     
-    res.json({
+    res.status(201).json({
       success: true,
       message: 'Merchant created successfully',
       merchant: result.rows[0]
@@ -176,30 +165,51 @@ export const updateMerchant = async (req, res) => {
       company_name,
       gmail_username,
       gmail_app_password,
-      selected_gateways,
       admin_reminder_email,
       self_reminder_time,
-      vendor_followup_time,
+      vendor_reminder_time,
       email_check_frequency,
+      selected_gateways,
       is_active
     } = req.body;
     
+    // Convert selected_gateways to JSON if it's an array or string
+    let gatewaysJson;
+    if (typeof selected_gateways === 'string') {
+      try {
+        gatewaysJson = JSON.stringify(JSON.parse(selected_gateways));
+      } catch {
+        gatewaysJson = selected_gateways;
+      }
+    } else if (Array.isArray(selected_gateways)) {
+      gatewaysJson = JSON.stringify(selected_gateways);
+    } else {
+      gatewaysJson = JSON.stringify([]);
+    }
+    
     const result = await pool.query(
-      `UPDATE merchants SET 
-        company_name = $1, gmail_username = $2, gmail_app_password = $3,
-        selected_gateways = $4, admin_reminder_email = $5,
-        self_reminder_time = $6, vendor_followup_time = $7,
-        email_check_frequency = $8, is_active = $9, updated_at = CURRENT_TIMESTAMP
-      WHERE id = $10 RETURNING *`,
+      `UPDATE merchants 
+       SET company_name = $1,
+           gmail_username = $2,
+           gmail_app_password = $3,
+           admin_reminder_email = $4,
+           self_reminder_time = $5,
+           vendor_reminder_time = $6,
+           email_check_frequency = $7,
+           selected_gateways = $8::jsonb,
+           is_active = $9,
+           updated_at = NOW()
+       WHERE id = $10
+       RETURNING *`,
       [
         company_name,
         gmail_username,
-        gmail_app_password,
-        JSON.stringify(selected_gateways || []),
+        gmail_app_password || null,
         admin_reminder_email,
         self_reminder_time,
-        vendor_followup_time,
+        vendor_reminder_time,
         email_check_frequency,
+        gatewaysJson,  // ← Now properly formatted
         is_active,
         id
       ]
@@ -222,7 +232,8 @@ export const updateMerchant = async (req, res) => {
     console.error('Update merchant error:', error);
     res.status(500).json({
       success: false,
-      message: 'Failed to update merchant'
+      message: 'Failed to update merchant',
+      error: error.message
     });
   }
 };
