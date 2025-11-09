@@ -1,3 +1,6 @@
+cd /Users/dipakbhosale/Projects/email-orchestrator/frontend/src/pages
+
+cat > Dashboard.jsx << 'EOF'
 import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { merchantAPI, emailAPI } from '../services/api';
@@ -186,6 +189,36 @@ function Dashboard() {
           </div>
         </div>
 
+        {/* Quick Actions */}
+        <div className="bg-white rounded-xl shadow-md p-8 mb-12">
+          <h2 className="text-2xl font-bold text-gray-900 mb-6">Quick Actions</h2>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <button
+              onClick={() => navigate('/merchants')}
+              className="bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-700 hover:to-blue-800 text-white p-6 rounded-lg font-semibold text-lg transition-all duration-200 shadow-md hover:shadow-lg flex items-center justify-center gap-3"
+            >
+              <span className="text-3xl">👥</span>
+              View All Merchants
+            </button>
+            
+            <button
+              onClick={() => navigate('/add-merchant')}
+              className="bg-gradient-to-r from-green-600 to-green-700 hover:from-green-700 hover:to-green-800 text-white p-6 rounded-lg font-semibold text-lg transition-all duration-200 shadow-md hover:shadow-lg flex items-center justify-center gap-3"
+            >
+              <span className="text-3xl">➕</span>
+              Add New Merchant
+            </button>
+            
+            <button
+              onClick={() => navigate('/scheduler')}
+              className="bg-gradient-to-r from-purple-600 to-purple-700 hover:from-purple-700 hover:to-purple-800 text-white p-6 rounded-lg font-semibold text-lg transition-all duration-200 shadow-md hover:shadow-lg flex items-center justify-center gap-3"
+            >
+              <span className="text-3xl">⏰</span>
+              Email Scheduler
+            </button>
+          </div>
+        </div>
+
         {/* Recent Email Threads */}
         <div className="bg-white rounded-xl shadow-md p-8 mb-12">
           <div className="flex justify-between items-center mb-6">
@@ -201,7 +234,8 @@ function Dashboard() {
           {recentThreads.length === 0 ? (
             <div className="text-center py-12">
               <div className="text-6xl mb-4">📭</div>
-              <p className="text-gray-600 mb-4">No email threads yet</p>
+              <h2 className="text-2xl font-bold text-gray-900 mb-2">No email threads yet</h2>
+              <p className="text-gray-600 mb-6">Click "Fetch New Emails" to check for gateway emails</p>
               <button
                 onClick={() => navigate('/merchants')}
                 className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-lg font-medium"
@@ -253,36 +287,6 @@ function Dashboard() {
           )}
         </div>
 
-        {/* Quick Actions */}
-        <div className="bg-white rounded-xl shadow-md p-8 mb-12">
-          <h2 className="text-2xl font-bold text-gray-900 mb-6">Quick Actions</h2>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <button
-              onClick={() => navigate('/merchants')}
-              className="bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-700 hover:to-blue-800 text-white p-6 rounded-lg font-semibold text-lg transition-all duration-200 shadow-md hover:shadow-lg flex items-center justify-center gap-3"
-            >
-              <span className="text-3xl">👥</span>
-              View All Merchants
-            </button>
-            
-            <button
-              onClick={() => navigate('/add-merchant')}
-              className="bg-gradient-to-r from-green-600 to-green-700 hover:from-green-700 hover:to-green-800 text-white p-6 rounded-lg font-semibold text-lg transition-all duration-200 shadow-md hover:shadow-lg flex items-center justify-center gap-3"
-            >
-              <span className="text-3xl">➕</span>
-              Add New Merchant
-            </button>
-            
-            <button
-              onClick={() => navigate('/scheduler')}
-              className="bg-gradient-to-r from-purple-600 to-purple-700 hover:from-purple-700 hover:to-purple-800 text-white p-6 rounded-lg font-semibold text-lg transition-all duration-200 shadow-md hover:shadow-lg flex items-center justify-center gap-3"
-            >
-              <span className="text-3xl">⏰</span>
-              Email Scheduler
-            </button>
-          </div>
-        </div>
-
         {/* Getting Started */}
         <div className="bg-gradient-to-r from-indigo-50 to-purple-50 rounded-xl p-8 border border-indigo-200">
           <h2 className="text-2xl font-bold text-gray-900 mb-4">🚀 Getting Started</h2>
@@ -311,3 +315,4 @@ function Dashboard() {
 }
 
 export default Dashboard;
+EOF
