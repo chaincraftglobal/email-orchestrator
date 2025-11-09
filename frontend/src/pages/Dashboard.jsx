@@ -1,6 +1,3 @@
-cd /Users/dipakbhosale/Projects/email-orchestrator/frontend/src/pages
-
-cat > Dashboard.jsx << 'EOF'
 import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { merchantAPI, emailAPI } from '../services/api';
@@ -315,4 +312,3 @@ function Dashboard() {
 }
 
 export default Dashboard;
-EOF
