@@ -162,73 +162,101 @@ class EmailService {
    * @returns {Object} - {isNew, isNewThread}
    */
   static async processEmail(email, merchant, direction) {
-    try {
-      // Check if email already exists
-      const existingEmail = await pool.query(
-        'SELECT id FROM emails WHERE gmail_message_id = $1',
-        [email.messageId]
-      );
-      
-      if (existingEmail.rows.length > 0) {
-        return { isNew: false, isNewThread: false };
-      }
-      
-      // Only detect gateway for inbound emails
-      let gateway = null;
-      let isGatewayEmail = false;
-      
-      if (direction === 'inbound') {
-        gateway = GatewayDetector.detectGateway(email, merchant.selected_gateways);
-        isGatewayEmail = gateway !== null;
-      }
-      
-      // If not a gateway email, skip it
-      if (direction === 'inbound' && !isGatewayEmail) {
-        return { isNew: false, isNewThread: false };
-      }
-      
-      // Save email to database
-      await pool.query(
-        `INSERT INTO emails (
-          merchant_id, gmail_message_id, thread_id,
-          subject, from_email, from_name,
-          to_emails, cc_emails,
-          body_text, body_html, snippet,
-          direction, gateway, has_attachments, attachments, email_date
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
-        [
-          merchant.id,
-          email.messageId,
-          email.threadId,
-          email.subject,
-          email.from?.address,
-          email.from?.name,
-          JSON.stringify(email.to),
-          JSON.stringify(email.cc),
-          email.text,
-          email.html,
-          email.text?.substring(0, 200) || '',
-          direction,
-          gateway,
-          email.attachments.length > 0,
-          JSON.stringify(email.attachments.map(a => ({ filename: a.filename, size: a.size }))),
-          email.date
-        ]
-      );
-      
-      // Create or update thread (only for gateway emails)
-      let isNewThread = false;
-      if (isGatewayEmail) {
-        isNewThread = await this.createOrUpdateThread(email, merchant, gateway, direction);
-      }
-      
-      return { isNew: true, isNewThread };
-      
-    } catch (error) {
-      console.error('Process email error:', error);
+  try {
+    // SKIP reminder emails and internal emails
+    const subject = (email.subject || '').toLowerCase();
+    const toEmails = JSON.stringify(email.to || []).toLowerCase();
+    const fromEmail = (email.from?.address || '').toLowerCase();
+    
+    // Don't process reminder emails
+    if (subject.includes('reminder') || 
+        subject.includes('🧪 test') ||
+        subject.includes('⚠️') ||
+        subject.includes('email orchestrator') ||
+        subject.includes('action required')) {
+      console.log(`⏭️ Skipping reminder email: "${email.subject}"`);
       return { isNew: false, isNewThread: false };
     }
+    
+    // Don't process emails sent TO admin reminder email (internal communications)
+    const adminEmail = merchant.admin_reminder_email?.toLowerCase();
+    if (adminEmail && toEmails.includes(adminEmail)) {
+      console.log(`⏭️ Skipping internal email to admin: ${adminEmail}`);
+      return { isNew: false, isNewThread: false };
+    }
+    
+    // Don't process if email is FROM SendGrid (our reminder sender)
+    if (fromEmail.includes('sendgrid') || fromEmail === merchant.gmail_username.toLowerCase()) {
+      console.log(`⏭️ Skipping email from our system: ${fromEmail}`);
+      return { isNew: false, isNewThread: false };
+    }
+    
+    // Check if email already exists
+    const existingEmail = await pool.query(
+      'SELECT id FROM emails WHERE gmail_message_id = $1',
+      [email.messageId]
+    );
+    
+    if (existingEmail.rows.length > 0) {
+      return { isNew: false, isNewThread: false };
+    }
+    
+    // Only detect gateway for inbound emails
+    let gateway = null;
+    let isGatewayEmail = false;
+    
+    if (direction === 'inbound') {
+      gateway = GatewayDetector.detectGateway(email, merchant.selected_gateways);
+      isGatewayEmail = gateway !== null;
+    }
+    
+    // If not a gateway email, skip it
+    if (direction === 'inbound' && !isGatewayEmail) {
+      return { isNew: false, isNewThread: false };
+    }
+    
+    // Save email to database
+    await pool.query(
+      `INSERT INTO emails (
+        merchant_id, gmail_message_id, thread_id,
+        subject, from_email, from_name,
+        to_emails, cc_emails,
+        body_text, body_html, snippet,
+        direction, gateway, has_attachments, attachments, email_date
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
+      [
+        merchant.id,
+        email.messageId,
+        email.threadId,
+        email.subject,
+        email.from?.address,
+        email.from?.name,
+        JSON.stringify(email.to),
+        JSON.stringify(email.cc),
+        email.text,
+        email.html,
+        email.text?.substring(0, 200) || '',
+        direction,
+        gateway,
+        email.attachments.length > 0,
+        JSON.stringify(email.attachments.map(a => ({ filename: a.filename, size: a.size }))),
+        email.date
+      ]
+    );
+    
+    // Create or update thread (only for gateway emails)
+    let isNewThread = false;
+    if (isGatewayEmail) {
+      isNewThread = await this.createOrUpdateThread(email, merchant, gateway, direction);
+    }
+    
+    return { isNew: true, isNewThread };
+    
+  } catch (error) {
+    console.error('Process email error:', error);
+    return { isNew: false, isNewThread: false };
   }
+}
   
   /**
    * Create or update email thread

@@ -149,55 +149,77 @@ class EmailScheduler {
   }
 
   // Save email to database (returns true if new, false if duplicate)
-  async saveEmail(merchantId, email, direction, gateway) {
-    try {
-      // Check if email already exists
-      const existing = await pool.query(
-        'SELECT id FROM emails WHERE gmail_message_id = $1',
-        [email.messageId]
-      );
-      
-      if (existing.rows.length > 0) {
-        return false; // Already exists
-      }
-      
-      // Insert email
-      await pool.query(
-        `INSERT INTO emails (
-          merchant_id, gmail_message_id, thread_id,
-          subject, from_email, from_name, to_emails, cc_emails,
-          body_text, body_html, snippet,
-          direction, gateway, has_attachments, attachments, email_date
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
-        [
-          merchantId,
-          email.messageId,
-          email.threadId,
-          email.subject,
-          email.from.address || '',
-          email.from.name || '',
-          JSON.stringify(email.to),
-          JSON.stringify(email.cc),
-          email.text,
-          email.html,
-          email.text?.substring(0, 200) || '',
-          direction,
-          gateway,
-          email.attachments.length > 0,
-          JSON.stringify(email.attachments),
-          email.date
-        ]
-      );
-      
-      // Update or create thread
-      await this.updateThread(merchantId, email, gateway, direction);
-      
-      return true; // New email saved
-    } catch (error) {
-      console.error('Error saving email:', error);
+  // Save email to database (returns true if new, false if duplicate)
+async saveEmail(merchantId, email, direction, gateway) {
+  try {
+    // SKIP reminder emails and internal emails
+    const subject = (email.subject || '').toLowerCase();
+    const fromEmail = (email.from?.address || email.from || '').toLowerCase();
+    const toEmails = JSON.stringify(email.to || []).toLowerCase();
+    
+    // Don't save reminder emails sent by our system
+    if (subject.includes('reminder') || 
+        subject.includes('🧪 test') || 
+        subject.includes('⚠️') ||
+        subject.includes('email orchestrator') ||
+        subject.includes('action required')) {
+      console.log(`⏭️ Skipping reminder email: "${email.subject}"`);
       return false;
     }
+    
+    // Don't save emails sent TO admin reminder email (internal communications)
+    if (toEmails.includes('lacewingtech') || toEmails.includes('admin_reminder')) {
+      console.log(`⏭️ Skipping internal email to admin`);
+      return false;
+    }
+    
+    // Check if email already exists
+    const existing = await pool.query(
+      'SELECT id FROM emails WHERE gmail_message_id = $1',
+      [email.messageId]
+    );
+    
+    if (existing.rows.length > 0) {
+      return false; // Already exists
+    }
+    
+    // Insert email
+    await pool.query(
+      `INSERT INTO emails (
+        merchant_id, gmail_message_id, thread_id,
+        subject, from_email, from_name, to_emails, cc_emails,
+        body_text, body_html, snippet,
+        direction, gateway, has_attachments, attachments, email_date
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
+      [
+        merchantId,
+        email.messageId,
+        email.threadId,
+        email.subject,
+        email.from.address || '',
+        email.from.name || '',
+        JSON.stringify(email.to),
+        JSON.stringify(email.cc),
+        email.text,
+        email.html,
+        email.text?.substring(0, 200) || '',
+        direction,
+        gateway,
+        email.attachments.length > 0,
+        JSON.stringify(email.attachments),
+        email.date
+      ]
+    );
+    
+    // Update or create thread
+    await this.updateThread(merchantId, email, gateway, direction);
+    
+    return true; // New email saved
+  } catch (error) {
+    console.error('Error saving email:', error);
+    return false;
   }
+}
 
   // Update thread status
   async updateThread(merchantId, email, gateway, direction) {
