@@ -343,52 +343,93 @@ function AddMerchant() {
             </div>
 
             {/* Reminder Settings */}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Self Reminder (minutes)
-                </label>
-                <input
-                  type="number"
-                  name="self_reminder_time"
-                  value={formData.self_reminder_time}
-                  onChange={handleChange}
-                  min="1"
-                  className="w-full px-4 py-2 border border-gray-300 rounded-lg"
-                />
-                <p className="text-xs text-gray-500 mt-1">Time before you get reminded to reply</p>
-              </div>
+          {/* Reminder Settings */}
+<div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+  <div>
+    <label className="block text-sm font-medium text-gray-700 mb-2">
+      Self Reminder (minutes)
+    </label>
+    <select
+      name="self_reminder_time"
+      value={formData.self_reminder_time}
+      onChange={handleChange}
+      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+    >
+      <option value="5">5 minutes</option>
+      <option value="10">10 minutes</option>
+      <option value="15">15 minutes</option>
+      <option value="30">30 minutes</option>
+      <option value="45">45 minutes</option>
+      <option value="60">1 hour</option>
+      <option value="90">1.5 hours</option>
+      <option value="120">2 hours</option>
+      <option value="180">3 hours</option>
+      <option value="240">4 hours</option>
+      <option value="300">5 hours</option>
+      <option value="360">6 hours</option>
+      <option value="480">8 hours</option>
+      <option value="540">9 hours</option>
+      <option value="720">12 hours</option>
+      <option value="900">15 hours</option>
+      <option value="1440">24 hours</option>
+    </select>
+    <p className="text-xs text-gray-500 mt-1">Time before you get reminded to reply</p>
+  </div>
 
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Vendor Reminder (minutes)
-                </label>
-                <input
-                  type="number"
-                  name="vendor_reminder_time"
-                  value={formData.vendor_reminder_time}
-                  onChange={handleChange}
-                  min="1"
-                  className="w-full px-4 py-2 border border-gray-300 rounded-lg"
-                />
-                <p className="text-xs text-gray-500 mt-1">Time before nudging vendor</p>
-              </div>
+  <div>
+    <label className="block text-sm font-medium text-gray-700 mb-2">
+      Vendor Reminder (minutes)
+    </label>
+    <select
+      name="vendor_reminder_time"
+      value={formData.vendor_reminder_time}
+      onChange={handleChange}
+      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+    >
+      <option value="30">30 minutes</option>
+      <option value="60">1 hour</option>
+      <option value="120">2 hours</option>
+      <option value="180">3 hours</option>
+      <option value="240">4 hours</option>
+      <option value="360">6 hours</option>
+      <option value="480">8 hours</option>
+      <option value="540">9 hours</option>
+      <option value="720">12 hours</option>
+      <option value="900">15 hours</option>
+      <option value="1080">18 hours</option>
+      <option value="1440">24 hours (1 day)</option>
+      <option value="2160">36 hours (1.5 days)</option>
+      <option value="2880">48 hours (2 days)</option>
+      <option value="4320">72 hours (3 days)</option>
+    </select>
+    <p className="text-xs text-gray-500 mt-1">Time before nudging vendor</p>
+  </div>
 
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Check Frequency (minutes)
-                </label>
-                <input
-                  type="number"
-                  name="email_check_frequency"
-                  value={formData.email_check_frequency}
-                  onChange={handleChange}
-                  min="1"
-                  className="w-full px-4 py-2 border border-gray-300 rounded-lg"
-                />
-                <p className="text-xs text-gray-500 mt-1">How often to check emails</p>
-              </div>
-            </div>
+  <div>
+    <label className="block text-sm font-medium text-gray-700 mb-2">
+      Check Frequency (minutes)
+    </label>
+    <select
+      name="email_check_frequency"
+      value={formData.email_check_frequency}
+      onChange={handleChange}
+      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+    >
+      <option value="1">1 minute</option>
+      <option value="2">2 minutes</option>
+      <option value="5">5 minutes</option>
+      <option value="10">10 minutes</option>
+      <option value="15">15 minutes</option>
+      <option value="30">30 minutes</option>
+      <option value="60">1 hour</option>
+      <option value="120">2 hours</option>
+      <option value="180">3 hours</option>
+      <option value="360">6 hours</option>
+      <option value="720">12 hours</option>
+    </select>
+    <p className="text-xs text-gray-500 mt-1">How often to check emails</p>
+  </div>
+</div>
 
             {/* Submit Button */}
             <div className="flex gap-4">
