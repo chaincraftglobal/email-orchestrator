@@ -5,7 +5,10 @@ import Imap from 'imap';
 export const getAllMerchants = async (req, res) => {
   try {
     const result = await pool.query(
-      'SELECT id, company_name, gmail_username, selected_gateways, admin_reminder_email, self_reminder_time, vendor_followup_time, email_check_frequency, is_active, last_email_check, created_at FROM merchants ORDER BY created_at DESC'
+      `SELECT id, company_name, gmail_username, selected_gateways, 
+       admin_reminder_email, self_reminder_time, vendor_reminder_time,
+       email_check_frequency, is_active, last_email_check, created_at 
+       FROM merchants ORDER BY created_at DESC`
     );
     
     res.json({
@@ -27,7 +30,10 @@ export const getMerchantById = async (req, res) => {
     const { id } = req.params;
     
     const result = await pool.query(
-      'SELECT id, company_name, gmail_username, selected_gateways, admin_reminder_email, self_reminder_time, vendor_followup_time, email_check_frequency, is_active, last_email_check, created_at FROM merchants WHERE id = $1',
+      `SELECT id, company_name, gmail_username, selected_gateways, 
+       admin_reminder_email, self_reminder_time, vendor_reminder_time, 
+       email_check_frequency, is_active, last_email_check, created_at 
+       FROM merchants WHERE id = $1`,
       [id]
     );
     
@@ -63,7 +69,6 @@ export const testGmailConnection = async (req, res) => {
       });
     }
     
-    // Create IMAP connection
     const imap = new Imap({
       user: gmail_username,
       password: gmail_app_password,
@@ -73,7 +78,6 @@ export const testGmailConnection = async (req, res) => {
       tlsOptions: { rejectUnauthorized: false }
     });
     
-    // Test connection
     return new Promise((resolve, reject) => {
       imap.once('ready', () => {
         imap.end();
@@ -116,7 +120,6 @@ export const createMerchant = async (req, res) => {
       selected_gateways
     } = req.body;
     
-    // Convert selected_gateways to JSON
     const gatewaysJson = Array.isArray(selected_gateways) 
       ? JSON.stringify(selected_gateways)
       : JSON.stringify([]);
@@ -136,7 +139,7 @@ export const createMerchant = async (req, res) => {
         self_reminder_time,
         vendor_reminder_time,
         email_check_frequency,
-        gatewaysJson,  // ← Properly formatted
+        gatewaysJson,
         true
       ]
     );
@@ -173,7 +176,6 @@ export const updateMerchant = async (req, res) => {
       is_active
     } = req.body;
     
-    // Convert selected_gateways to JSON if it's an array or string
     let gatewaysJson;
     if (typeof selected_gateways === 'string') {
       try {
@@ -209,7 +211,7 @@ export const updateMerchant = async (req, res) => {
         self_reminder_time,
         vendor_reminder_time,
         email_check_frequency,
-        gatewaysJson,  // ← Now properly formatted
+        gatewaysJson,
         is_active,
         id
       ]
