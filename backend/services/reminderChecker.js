@@ -153,10 +153,13 @@ class ReminderChecker {
       const lastReminder = new Date(thread.last_vendor_reminder_at);
       const minutesSinceLastReminder = Math.floor((now - lastReminder) / 60000);
       
-      if (minutesSinceLastReminder < 360) { // 6 hours cooldown
-        console.log(`⏸️ Thread "${thread.subject}" - Last reminder sent ${minutesSinceLastReminder} min ago (cooldown: 360 min)`);
-        return false;
-      }
+     // Use 30 min cooldown for testing, 6 hours for production
+const cooldownMinutes = merchant.vendor_reminder_time < 60 ? 30 : 360;
+
+if (minutesSinceLastReminder < cooldownMinutes) {
+  console.log(`⏸️ Thread "${thread.subject}" - Last reminder sent ${minutesSinceLastReminder} min ago (cooldown: ${cooldownMinutes} min)`);
+  return false;
+}
     }
     
     // Check max nudges limit (don't spam vendors)
