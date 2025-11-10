@@ -16,7 +16,8 @@ class ReminderChecker {
     try {
       console.log(`\n🔔 Checking reminders for ${merchant.company_name}...`);
       
-      const result = await pool.query(
+      // Check threads waiting on US
+      const selfThreads = await pool.query(
         `SELECT * FROM email_threads 
          WHERE merchant_id = $1 
          AND status = 'waiting_on_us'
@@ -24,10 +25,20 @@ class ReminderChecker {
         [merchant.id]
       );
       
-      const threads = result.rows;
-      console.log(`📋 Found ${threads.length} threads waiting on us`);
+      console.log(`📋 Found ${selfThreads.rows.length} threads waiting on us`);
       
-      if (threads.length === 0) {
+      // Check threads waiting on VENDOR
+      const vendorThreads = await pool.query(
+        `SELECT * FROM email_threads 
+         WHERE merchant_id = $1 
+         AND status = 'waiting_on_vendor'
+         ORDER BY last_activity_at ASC`,
+        [merchant.id]
+      );
+      
+      console.log(`📋 Found ${vendorThreads.rows.length} threads waiting on vendor`);
+      
+      if (selfThreads.rows.length === 0 && vendorThreads.rows.length === 0) {
         return;
       }
       
@@ -38,7 +49,8 @@ class ReminderChecker {
       
       let remindersSent = 0;
       
-      for (const thread of threads) {
+      // Process SELF reminders
+      for (const thread of selfThreads.rows) {
         const lastInbound = new Date(thread.last_inbound_at);
         const now = new Date();
         const minutesSinceInbound = Math.floor((now - lastInbound) / 60000);
@@ -50,7 +62,7 @@ class ReminderChecker {
         );
         
         if (shouldSendReminder) {
-          console.log(`⚠️ Thread "${thread.subject}" needs reminder (${minutesSinceInbound} min since vendor email)`);
+          console.log(`⚠️ Thread "${thread.subject}" needs self-reminder (${minutesSinceInbound} min since vendor email)`);
           
           const emailSent = await this.sendSelfReminder(merchant, thread);
           
@@ -69,8 +81,36 @@ class ReminderChecker {
         }
       }
       
+      // Process VENDOR reminders
+      for (const thread of vendorThreads.rows) {
+        const shouldSendNudge = await this.shouldSendVendorNudge(merchant, thread);
+        
+        if (shouldSendNudge) {
+          const lastOutbound = new Date(thread.last_outbound_at);
+          const now = new Date();
+          const minutesSinceOutbound = Math.floor((now - lastOutbound) / 60000);
+          
+          console.log(`⚠️ Thread "${thread.subject}" needs vendor nudge (${minutesSinceOutbound} min since our reply)`);
+          
+          const emailSent = await this.sendVendorNudge(merchant, thread);
+          
+          if (emailSent) {
+            await pool.query(
+              `UPDATE email_threads 
+               SET is_hot = true, 
+                   vendor_reminder_sent_count = COALESCE(vendor_reminder_sent_count, 0) + 1,
+                   last_vendor_reminder_at = NOW()
+               WHERE id = $1`,
+              [thread.id]
+            );
+            
+            remindersSent++;
+          }
+        }
+      }
+      
       if (remindersSent > 0) {
-        console.log(`✅ Sent ${remindersSent} self-reminder(s) for ${merchant.company_name}`);
+        console.log(`✅ Sent ${remindersSent} reminder(s) for ${merchant.company_name}`);
       } else {
         console.log(`✅ No reminders needed for ${merchant.company_name}`);
       }
@@ -89,7 +129,44 @@ class ReminderChecker {
     const now = new Date();
     const minutesSinceLastReminder = Math.floor((now - lastReminder) / 60000);
     
-    return minutesSinceLastReminder >= 360; // 6 hours
+    return minutesSinceLastReminder >= 360; // 6 hours cooldown
+  }
+  
+  async shouldSendVendorNudge(merchant, thread) {
+    if (!thread.last_outbound_at) {
+      console.log(`⏭️ Thread "${thread.subject}" - No outbound message yet`);
+      return false;
+    }
+    
+    const lastOutbound = new Date(thread.last_outbound_at);
+    const now = new Date();
+    const minutesSinceOutbound = Math.floor((now - lastOutbound) / 60000);
+    
+    // Check if enough time has passed since our last reply
+    if (minutesSinceOutbound < merchant.vendor_reminder_time) {
+      console.log(`⏳ Thread "${thread.subject}" - ${minutesSinceOutbound}/${merchant.vendor_reminder_time} min elapsed`);
+      return false;
+    }
+    
+    // Check if we already sent a reminder recently (6 hour cooldown)
+    if (thread.last_vendor_reminder_at) {
+      const lastReminder = new Date(thread.last_vendor_reminder_at);
+      const minutesSinceLastReminder = Math.floor((now - lastReminder) / 60000);
+      
+      if (minutesSinceLastReminder < 360) { // 6 hours cooldown
+        console.log(`⏸️ Thread "${thread.subject}" - Last reminder sent ${minutesSinceLastReminder} min ago (cooldown: 360 min)`);
+        return false;
+      }
+    }
+    
+    // Check max nudges limit (don't spam vendors)
+    const nudgeCount = thread.vendor_reminder_sent_count || 0;
+    if (nudgeCount >= 3) {
+      console.log(`🛑 Thread "${thread.subject}" - Max nudges reached (${nudgeCount}/3)`);
+      return false;
+    }
+    
+    return true;
   }
   
   // Format time in human-readable way
@@ -117,7 +194,7 @@ class ReminderChecker {
         return false;
       }
       
-      console.log(`📤 Sending reminder via SendGrid...`);
+      console.log(`📤 Sending self-reminder via SendGrid...`);
       
       // Get last inbound email content
       const emailResult = await pool.query(
@@ -238,6 +315,92 @@ class ReminderChecker {
       
     } catch (error) {
       console.error('❌ Error sending self-reminder:', error.message);
+      if (error.response?.body?.errors) {
+        console.error('SendGrid errors:', JSON.stringify(error.response.body.errors, null, 2));
+      }
+      return false;
+    }
+  }
+  
+  async sendVendorNudge(merchant, thread) {
+    try {
+      if (!process.env.SENDGRID_API_KEY) {
+        console.log('⚠️ SendGrid not configured - skipping vendor nudge');
+        return false;
+      }
+      
+      console.log(`📤 Sending vendor nudge via SendGrid...`);
+      
+      const lastOutbound = new Date(thread.last_outbound_at);
+      const timeSince = this.formatTimeSince(lastOutbound);
+      const reminderCount = (thread.vendor_reminder_sent_count || 0) + 1;
+      
+      const subject = `Gentle Reminder: ${thread.subject}`;
+      const html = `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; background-color: #ffffff;">
+          <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 30px; text-align: center; border-radius: 10px 10px 0 0;">
+            <h1 style="margin: 0; font-size: 24px;">⏰ Gentle Reminder</h1>
+            <p style="margin: 10px 0 0 0; font-size: 14px; opacity: 0.9;">Following up on pending request</p>
+          </div>
+          
+          <div style="padding: 30px 20px;">
+            <p style="font-size: 16px; color: #202124; line-height: 1.6;">
+              Hi ${thread.vendor_name},
+            </p>
+            
+            <p style="font-size: 16px; color: #202124; line-height: 1.6;">
+              We wanted to follow up on our previous message regarding <strong>${merchant.company_name}</strong>'s merchant onboarding.
+            </p>
+            
+            <div style="background-color: #f3f4f6; border-left: 4px solid #3b82f6; padding: 15px; margin: 20px 0; border-radius: 5px;">
+              <p style="margin: 0; font-size: 14px; color: #374151;">
+                <strong>Subject:</strong> ${thread.subject}<br>
+                <strong>Time elapsed:</strong> ${timeSince} since our last message
+              </p>
+            </div>
+            
+            <p style="font-size: 16px; color: #202124; line-height: 1.6;">
+              Could you please provide an update on the status? We're eager to proceed with the onboarding process.
+            </p>
+            
+            <p style="font-size: 16px; color: #202124; line-height: 1.6;">
+              If you need any additional information from us, please let us know.
+            </p>
+            
+            <p style="font-size: 16px; color: #202124; line-height: 1.6; margin-top: 30px;">
+              Thank you for your attention!
+            </p>
+            
+            <p style="font-size: 16px; color: #202124; line-height: 1.6;">
+              Best regards,<br>
+              <strong>${merchant.company_name}</strong><br>
+              ${merchant.gmail_username}
+            </p>
+          </div>
+          
+          <div style="background-color: #f9fafb; padding: 20px; text-align: center; color: #6b7280; font-size: 12px; border-radius: 0 0 10px 10px; border-top: 1px solid #e5e7eb;">
+            <p style="margin: 5px 0;">Automated Follow-up #${reminderCount}</p>
+            <p style="margin: 5px 0;">Sent by Email Orchestrator</p>
+          </div>
+        </div>
+      `;
+      
+      const msg = {
+        to: thread.vendor_email,
+        from: process.env.SENDGRID_FROM_EMAIL || merchant.gmail_username,
+        replyTo: merchant.gmail_username,
+        subject: subject,
+        html: html
+      };
+      
+      await sgMail.send(msg);
+      
+      console.log(`✉️ Sent vendor nudge #${reminderCount} to ${thread.vendor_email} via SendGrid`);
+      
+      return true;
+      
+    } catch (error) {
+      console.error('❌ Error sending vendor nudge:', error.message);
       if (error.response?.body?.errors) {
         console.error('SendGrid errors:', JSON.stringify(error.response.body.errors, null, 2));
       }
