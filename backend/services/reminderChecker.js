@@ -322,12 +322,70 @@ class ReminderChecker {
     }
   }
   
- async sendVendorNudge(merchant, thread) {
+async sendVendorNudge(merchant, thread) {
   try {
-    console.log(`📤 Sending vendor nudge as REPLY to thread...`);
+    console.log(`📤 Sending AI-generated vendor nudge as REPLY to thread...`);
     
-    // Import nodemailer
+    // Import required libraries
     const nodemailer = (await import('nodemailer')).default;
+    const OpenAI = (await import('openai')).default;
+    
+    // Check if OpenAI API key is configured
+    if (!process.env.OPENAI_API_KEY) {
+      console.log('⚠️ OpenAI API key not configured - using template instead');
+      return await this.sendVendorNudgeTemplate(merchant, thread);
+    }
+    
+    // Initialize OpenAI
+    const openai = new OpenAI({
+      apiKey: process.env.OPENAI_API_KEY
+    });
+    
+    // Calculate time since last message
+    const lastOutbound = new Date(thread.last_outbound_at);
+    const timeSince = this.formatTimeSince(lastOutbound);
+    const reminderCount = (thread.vendor_reminder_sent_count || 0) + 1;
+    
+    // Generate email content using ChatGPT
+    console.log(`🤖 Generating email content using ChatGPT...`);
+    
+    const completion = await openai.chat.completions.create({
+      model: "gpt-4o-mini", // Faster and cheaper than gpt-4
+      messages: [
+        {
+          role: "system",
+          content: `You are a professional business communication assistant. Write a polite, brief, and natural follow-up email for a merchant onboarding process. 
+
+RULES:
+- Keep it short (3-4 paragraphs maximum)
+- Sound human and natural, NOT robotic
+- Be polite but not overly formal
+- Don't use fancy formatting or bullet points
+- Don't mention this is an automated email
+- Don't use emojis
+- Keep tone professional but friendly
+- Focus on requesting an update on the onboarding status`
+        },
+        {
+          role: "user",
+          content: `Write a follow-up email with these details:
+
+Vendor Name: ${thread.vendor_name}
+Company: ${merchant.company_name}
+Subject: ${thread.subject}
+Time since last message: ${timeSince}
+Follow-up number: ${reminderCount}
+
+Write a natural follow-up email asking for an update on the merchant onboarding process. Keep it brief and professional.`
+        }
+      ],
+      temperature: 0.7, // Adds natural variation
+      max_tokens: 300
+    });
+    
+    const aiGeneratedContent = completion.choices[0].message.content.trim();
+    
+    console.log(`✅ ChatGPT generated email content (${aiGeneratedContent.length} chars)`);
     
     // Create Gmail SMTP transporter
     const transporter = nodemailer.createTransport({
@@ -337,10 +395,6 @@ class ReminderChecker {
         pass: merchant.gmail_app_password
       }
     });
-    
-    const lastOutbound = new Date(thread.last_outbound_at);
-    const timeSince = this.formatTimeSince(lastOutbound);
-    const reminderCount = (thread.vendor_reminder_sent_count || 0) + 1;
     
     // Build References header for threading
     let references = '';
@@ -353,17 +407,73 @@ class ReminderChecker {
         : thread.last_gmail_message_id;
     }
     
-    // SIMPLE HUMAN-LIKE EMAIL (NO CSS!)
+    // Prepare email
     const mailOptions = {
       from: `${merchant.company_name} <${merchant.gmail_username}>`,
       to: thread.vendor_email,
-      subject: `Re: ${thread.subject}`, // Must start with "Re:"
+      subject: `Re: ${thread.subject}`,
       
-      // CRITICAL: These headers keep it in same thread
+      // Threading headers
       ...(inReplyTo && { inReplyTo: inReplyTo }),
       ...(references && { references: references }),
       
-      // Plain text version
+      // Use AI-generated content
+      text: aiGeneratedContent,
+      html: `<div style="font-family: Arial, sans-serif; line-height: 1.6;">${aiGeneratedContent.replace(/\n\n/g, '</p><p>').replace(/^/, '<p>').replace(/$/, '</p>')}</div>`
+    };
+    
+    await transporter.sendMail(mailOptions);
+    
+    console.log(`✉️ Sent AI-generated vendor nudge #${reminderCount} to ${thread.vendor_email}`);
+    
+    return true;
+    
+  } catch (error) {
+    console.error('❌ Error sending vendor nudge:', error.message);
+    
+    // Fallback to template if API fails
+    console.log('⚠️ Falling back to template email...');
+    return await this.sendVendorNudgeTemplate(merchant, thread);
+  }
+}
+
+// Fallback template method (if OpenAI fails or not configured)
+async sendVendorNudgeTemplate(merchant, thread) {
+  try {
+    console.log(`📤 Sending template vendor nudge as REPLY to thread...`);
+    
+    const nodemailer = (await import('nodemailer')).default;
+    
+    const transporter = nodemailer.createTransport({
+      service: 'gmail',
+      auth: {
+        user: merchant.gmail_username,
+        pass: merchant.gmail_app_password
+      }
+    });
+    
+    const lastOutbound = new Date(thread.last_outbound_at);
+    const timeSince = this.formatTimeSince(lastOutbound);
+    const reminderCount = (thread.vendor_reminder_sent_count || 0) + 1;
+    
+    let references = '';
+    let inReplyTo = '';
+    
+    if (thread.last_gmail_message_id) {
+      inReplyTo = thread.last_gmail_message_id;
+      references = thread.message_references 
+        ? `${thread.message_references} ${thread.last_gmail_message_id}`
+        : thread.last_gmail_message_id;
+    }
+    
+    const mailOptions = {
+      from: `${merchant.company_name} <${merchant.gmail_username}>`,
+      to: thread.vendor_email,
+      subject: `Re: ${thread.subject}`,
+      
+      ...(inReplyTo && { inReplyTo: inReplyTo }),
+      ...(references && { references: references }),
+      
       text: `Hi ${thread.vendor_name},
 
 I hope you're doing well. I wanted to follow up on our previous message regarding ${merchant.company_name}'s merchant onboarding.
@@ -378,8 +488,7 @@ Best regards,
 ${merchant.company_name}
 ${merchant.gmail_username}`,
       
-      // HTML version (simple, no CSS)
-      html: `<div>
+      html: `<div style="font-family: Arial, sans-serif; line-height: 1.6;">
 <p>Hi ${thread.vendor_name},</p>
 
 <p>I hope you're doing well. I wanted to follow up on our previous message regarding <strong>${merchant.company_name}</strong>'s merchant onboarding.</p>
@@ -398,12 +507,12 @@ ${merchant.gmail_username}</p>
     
     await transporter.sendMail(mailOptions);
     
-    console.log(`✉️ Sent vendor nudge #${reminderCount} as REPLY in thread to ${thread.vendor_email}`);
+    console.log(`✉️ Sent template vendor nudge #${reminderCount} to ${thread.vendor_email}`);
     
     return true;
     
   } catch (error) {
-    console.error('❌ Error sending vendor nudge:', error.message);
+    console.error('❌ Error sending template vendor nudge:', error.message);
     return false;
   }
 }
