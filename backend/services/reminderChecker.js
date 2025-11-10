@@ -322,91 +322,91 @@ class ReminderChecker {
     }
   }
   
-  async sendVendorNudge(merchant, thread) {
-    try {
-      if (!process.env.SENDGRID_API_KEY) {
-        console.log('⚠️ SendGrid not configured - skipping vendor nudge');
-        return false;
+ async sendVendorNudge(merchant, thread) {
+  try {
+    console.log(`📤 Sending vendor nudge as REPLY to thread...`);
+    
+    // Import nodemailer
+    const nodemailer = (await import('nodemailer')).default;
+    
+    // Create Gmail SMTP transporter
+    const transporter = nodemailer.createTransport({
+      service: 'gmail',
+      auth: {
+        user: merchant.gmail_username,
+        pass: merchant.gmail_app_password
       }
-      
-      console.log(`📤 Sending vendor nudge via SendGrid...`);
-      
-      const lastOutbound = new Date(thread.last_outbound_at);
-      const timeSince = this.formatTimeSince(lastOutbound);
-      const reminderCount = (thread.vendor_reminder_sent_count || 0) + 1;
-      
-      const subject = `Gentle Reminder: ${thread.subject}`;
-      const html = `
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; background-color: #ffffff;">
-          <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 30px; text-align: center; border-radius: 10px 10px 0 0;">
-            <h1 style="margin: 0; font-size: 24px;">⏰ Gentle Reminder</h1>
-            <p style="margin: 10px 0 0 0; font-size: 14px; opacity: 0.9;">Following up on pending request</p>
-          </div>
-          
-          <div style="padding: 30px 20px;">
-            <p style="font-size: 16px; color: #202124; line-height: 1.6;">
-              Hi ${thread.vendor_name},
-            </p>
-            
-            <p style="font-size: 16px; color: #202124; line-height: 1.6;">
-              We wanted to follow up on our previous message regarding <strong>${merchant.company_name}</strong>'s merchant onboarding.
-            </p>
-            
-            <div style="background-color: #f3f4f6; border-left: 4px solid #3b82f6; padding: 15px; margin: 20px 0; border-radius: 5px;">
-              <p style="margin: 0; font-size: 14px; color: #374151;">
-                <strong>Subject:</strong> ${thread.subject}<br>
-                <strong>Time elapsed:</strong> ${timeSince} since our last message
-              </p>
-            </div>
-            
-            <p style="font-size: 16px; color: #202124; line-height: 1.6;">
-              Could you please provide an update on the status? We're eager to proceed with the onboarding process.
-            </p>
-            
-            <p style="font-size: 16px; color: #202124; line-height: 1.6;">
-              If you need any additional information from us, please let us know.
-            </p>
-            
-            <p style="font-size: 16px; color: #202124; line-height: 1.6; margin-top: 30px;">
-              Thank you for your attention!
-            </p>
-            
-            <p style="font-size: 16px; color: #202124; line-height: 1.6;">
-              Best regards,<br>
-              <strong>${merchant.company_name}</strong><br>
-              ${merchant.gmail_username}
-            </p>
-          </div>
-          
-          <div style="background-color: #f9fafb; padding: 20px; text-align: center; color: #6b7280; font-size: 12px; border-radius: 0 0 10px 10px; border-top: 1px solid #e5e7eb;">
-            <p style="margin: 5px 0;">Automated Follow-up #${reminderCount}</p>
-            <p style="margin: 5px 0;">Sent by Email Orchestrator</p>
-          </div>
-        </div>
-      `;
-      
-      const msg = {
-        to: thread.vendor_email,
-        from: process.env.SENDGRID_FROM_EMAIL || merchant.gmail_username,
-        replyTo: merchant.gmail_username,
-        subject: subject,
-        html: html
-      };
-      
-      await sgMail.send(msg);
-      
-      console.log(`✉️ Sent vendor nudge #${reminderCount} to ${thread.vendor_email} via SendGrid`);
-      
-      return true;
-      
-    } catch (error) {
-      console.error('❌ Error sending vendor nudge:', error.message);
-      if (error.response?.body?.errors) {
-        console.error('SendGrid errors:', JSON.stringify(error.response.body.errors, null, 2));
-      }
-      return false;
+    });
+    
+    const lastOutbound = new Date(thread.last_outbound_at);
+    const timeSince = this.formatTimeSince(lastOutbound);
+    const reminderCount = (thread.vendor_reminder_sent_count || 0) + 1;
+    
+    // Build References header for threading
+    let references = '';
+    let inReplyTo = '';
+    
+    if (thread.last_gmail_message_id) {
+      inReplyTo = thread.last_gmail_message_id;
+      references = thread.message_references 
+        ? `${thread.message_references} ${thread.last_gmail_message_id}`
+        : thread.last_gmail_message_id;
     }
+    
+    // SIMPLE HUMAN-LIKE EMAIL (NO CSS!)
+    const mailOptions = {
+      from: `${merchant.company_name} <${merchant.gmail_username}>`,
+      to: thread.vendor_email,
+      subject: `Re: ${thread.subject}`, // Must start with "Re:"
+      
+      // CRITICAL: These headers keep it in same thread
+      ...(inReplyTo && { inReplyTo: inReplyTo }),
+      ...(references && { references: references }),
+      
+      // Plain text version
+      text: `Hi ${thread.vendor_name},
+
+I hope you're doing well. I wanted to follow up on our previous message regarding ${merchant.company_name}'s merchant onboarding.
+
+It's been ${timeSince} since our last message, and we're eager to proceed with the onboarding process.
+
+Could you please provide an update on the status? If you need any additional information or documentation from us, please let us know.
+
+Looking forward to your response.
+
+Best regards,
+${merchant.company_name}
+${merchant.gmail_username}`,
+      
+      // HTML version (simple, no CSS)
+      html: `<div>
+<p>Hi ${thread.vendor_name},</p>
+
+<p>I hope you're doing well. I wanted to follow up on our previous message regarding <strong>${merchant.company_name}</strong>'s merchant onboarding.</p>
+
+<p>It's been <strong>${timeSince}</strong> since our last message, and we're eager to proceed with the onboarding process.</p>
+
+<p>Could you please provide an update on the status? If you need any additional information or documentation from us, please let us know.</p>
+
+<p>Looking forward to your response.</p>
+
+<p>Best regards,<br>
+${merchant.company_name}<br>
+${merchant.gmail_username}</p>
+</div>`
+    };
+    
+    await transporter.sendMail(mailOptions);
+    
+    console.log(`✉️ Sent vendor nudge #${reminderCount} as REPLY in thread to ${thread.vendor_email}`);
+    
+    return true;
+    
+  } catch (error) {
+    console.error('❌ Error sending vendor nudge:', error.message);
+    return false;
   }
+}
   
   isWorkingHours() {
     const now = new Date();
