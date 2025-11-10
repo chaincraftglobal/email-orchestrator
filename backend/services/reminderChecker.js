@@ -422,70 +422,100 @@ Write a natural follow-up email asking for an update on the merchant onboarding 
 }
 
 // Fallback template method (if OpenAI fails or not configured)
-async sendVendorNudgeTemplate(merchant, thread) {
+async sendVendorNudge(merchant, thread) {
   try {
-    console.log(`📤 Sending template vendor nudge via SendGrid...`);
+    console.log(`📤 Sending AI-generated vendor nudge via Gmail SMTP...`);
     
-    if (!process.env.SENDGRID_API_KEY) {
-      console.log('⚠️ SendGrid not configured - cannot send email');
-      return false;
+    const nodemailer = (await import('nodemailer')).default;
+    const OpenAI = (await import('openai')).default;
+    
+    if (!process.env.OPENAI_API_KEY) {
+      console.log('⚠️ OpenAI not configured');
+      return await this.sendVendorNudgeTemplate(merchant, thread);
     }
+    
+    const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
     
     const lastOutbound = new Date(thread.last_outbound_at);
     const timeSince = this.formatTimeSince(lastOutbound);
     const reminderCount = (thread.vendor_reminder_sent_count || 0) + 1;
     
-    const textContent = `Hi ${thread.vendor_name},
+    console.log(`🤖 Generating email content using ChatGPT...`);
+    
+    const completion = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [
+        {
+          role: "system",
+          content: `Write a brief follow-up email (3-4 paragraphs). Use actual names, no placeholders. Professional tone.`
+        },
+        {
+          role: "user",
+          content: `Write follow-up from PrintKart India to ${thread.vendor_name}.
+Merchant onboarding, ${timeSince} since last message.
 
-I hope you're doing well. I wanted to follow up on our previous message regarding ${merchant.company_name}'s merchant onboarding.
-
-It's been ${timeSince} since our last message, and we're eager to proceed with the onboarding process.
-
-Could you please provide an update on the status? If you need any additional information or documentation from us, please let us know.
-
-Looking forward to your response.
-
+Sign as:
 Best regards,
-${merchant.company_name}
-${merchant.gmail_username}`;
+Dipak Bhosale
+PrintKart India
+${merchant.gmail_username}`
+        }
+      ],
+      temperature: 0.7,
+      max_tokens: 250
+    });
     
-    const htmlContent = `<div style="font-family: Arial, sans-serif; line-height: 1.6;">
-<p>Hi ${thread.vendor_name},</p>
-
-<p>I hope you're doing well. I wanted to follow up on our previous message regarding <strong>${merchant.company_name}</strong>'s merchant onboarding.</p>
-
-<p>It's been <strong>${timeSince}</strong> since our last message, and we're eager to proceed with the onboarding process.</p>
-
-<p>Could you please provide an update on the status? If you need any additional information or documentation from us, please let us know.</p>
-
-<p>Looking forward to your response.</p>
-
-<p>Best regards,<br>
-${merchant.company_name}<br>
-${merchant.gmail_username}</p>
-</div>`;
+    const aiContent = completion.choices[0].message.content.trim();
     
-    const msg = {
+    console.log(`✅ ChatGPT generated (${aiContent.length} chars)`);
+    
+    // IMPROVED SMTP Configuration
+    const transporter = nodemailer.createTransport({
+      host: 'smtp.gmail.com',
+      port: 465,  // SSL port (more reliable)
+      secure: true,  // Use SSL
+      auth: {
+        user: merchant.gmail_username,
+        pass: merchant.gmail_app_password
+      },
+      connectionTimeout: 60000,  // 60 seconds
+      greetingTimeout: 30000,
+      socketTimeout: 60000,
+      tls: {
+        rejectUnauthorized: false
+      }
+    });
+    
+    let references = '';
+    let inReplyTo = '';
+    
+    if (thread.last_gmail_message_id) {
+      inReplyTo = thread.last_gmail_message_id;
+      references = thread.message_references 
+        ? `${thread.message_references} ${thread.last_gmail_message_id}`
+        : thread.last_gmail_message_id;
+    }
+    
+    const mailOptions = {
+      from: `${merchant.company_name} <${merchant.gmail_username}>`,
       to: thread.vendor_email,
-      from: process.env.SENDGRID_FROM_EMAIL,
-      replyTo: merchant.gmail_username, // Vendor replies go to Gmail!
       subject: `Re: ${thread.subject}`,
-      text: textContent,
-      html: htmlContent
+      ...(inReplyTo && { inReplyTo: inReplyTo }),
+      ...(references && { references: references }),
+      text: aiContent,
+      html: `<div style="font-family: Arial, sans-serif; line-height: 1.6;">${aiContent.replace(/\n\n/g, '</p><p>').replace(/^/, '<p>').replace(/$/, '</p>')}</div>`
     };
     
-    await sgMail.send(msg);
+    await transporter.sendMail(mailOptions);
     
-    console.log(`✉️ Sent template vendor nudge #${reminderCount} to ${thread.vendor_email} via SendGrid`);
+    console.log(`✉️ Sent AI nudge #${reminderCount} via Gmail SMTP (port 465)`);
     
     return true;
     
   } catch (error) {
-    console.error('❌ Error sending template vendor nudge:', error.message);
-    if (error.response?.body?.errors) {
-      console.error('SendGrid errors:', JSON.stringify(error.response.body.errors, null, 2));
-    }
-    return false;
+    console.error('❌ Error:', error.message);
+    console.log('⚠️ Falling back to template...');
+    return await this.sendVendorNudgeTemplate(merchant, thread);
   }
 }
   
