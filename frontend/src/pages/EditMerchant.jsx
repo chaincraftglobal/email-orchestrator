@@ -19,7 +19,7 @@ function EditMerchant() {
     selected_gateways: [],
     admin_reminder_email: '',
     self_reminder_time: 30,
-    vendor_followup_time: 180,
+ vendor_reminder_time: 1440,  // ← CORRECT
     email_check_frequency: 30,
     is_active: true
   });
@@ -299,22 +299,35 @@ function EditMerchant() {
                   </select>
                 </div>
 
-                <div>
-                  <label className="block text-gray-700 font-bold mb-2">
-                    Vendor Followup Time
-                  </label>
-                  <select
-                    name="vendor_followup_time"
-                    value={formData.vendor_followup_time}
-                    onChange={handleChange}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  >
-                    <option value={180}>3 hours</option>
-                    <option value={360}>6 hours</option>
-                    <option value={720}>12 hours</option>
-                    <option value={1440}>24 hours</option>
-                  </select>
-                </div>
+             <div>
+  <label className="block text-sm font-medium text-gray-700 mb-2">
+    Vendor Reminder (minutes)
+  </label>
+  <select
+    name="vendor_reminder_time"
+    value={formData.vendor_reminder_time}
+    onChange={handleChange}
+    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+  >
+    <option value="5">5 minutes (Testing)</option>
+    <option value="10">10 minutes (Testing)</option>
+    <option value="15">15 minutes (Testing)</option>
+    <option value="30">30 minutes</option>
+    <option value="45">45 minutes</option>
+    <option value="60">1 hour</option>
+    <option value="120">2 hours</option>
+    <option value="180">3 hours</option>
+    <option value="240">4 hours</option>
+    <option value="360">6 hours</option>
+    <option value="480">8 hours</option>
+    <option value="720">12 hours</option>
+    <option value="1440">24 hours (1 day)</option>
+    <option value="2160">36 hours (1.5 days)</option>
+    <option value="2880">48 hours (2 days)</option>
+    <option value="4320">72 hours (3 days)</option>
+  </select>
+  <p className="text-xs text-gray-500 mt-1">Time before nudging vendor</p>
+</div>
 
                 <div>
                   <label className="block text-gray-700 font-bold mb-2">
