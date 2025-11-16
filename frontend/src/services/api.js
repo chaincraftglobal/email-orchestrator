@@ -1,15 +1,15 @@
 import axios from 'axios';
 
-// Hardcoded production URL (bypasses .env files)
+// Hardcoded production URL
 const PRODUCTION_API_URL = 'https://email-orchestrator.onrender.com/api';
 const DEVELOPMENT_API_URL = 'http://localhost:5001/api';
 
-// Detect if we're in production by checking the hostname
+// Detect if we're in production by checking for Render hostname
 const isProduction = typeof window !== 'undefined' && 
-  (window.location.hostname === 'email-orchestrator-ten.vercel.app' || 
-   window.location.hostname.includes('.vercel.app'));
+  (window.location.hostname.includes('.onrender.com') || 
+   window.location.hostname === 'email-orchestrator-frontend.onrender.com');
 
-// Use production URL if on Vercel, otherwise localhost
+// Use production URL if on Render, otherwise localhost
 const API_BASE_URL = isProduction ? PRODUCTION_API_URL : DEVELOPMENT_API_URL;
 
 // Debug logging
