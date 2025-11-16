@@ -1,7 +1,7 @@
 import axios from 'axios';
 
 // Hardcoded production URL (bypasses .env files)
-const PRODUCTION_API_URL = 'https://email-orchestrator-production.up.railway.app/api';
+const PRODUCTION_API_URL = 'https://email-orchestrator.onrender.com/api';
 const DEVELOPMENT_API_URL = 'http://localhost:5001/api';
 
 // Detect if we're in production by checking the hostname
