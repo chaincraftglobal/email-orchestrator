@@ -120,26 +120,35 @@ export const createMerchant = async (req, res) => {
       selected_gateways
     } = req.body;
     
-    const gatewaysJson = Array.isArray(selected_gateways) 
-      ? JSON.stringify(selected_gateways)
-      : JSON.stringify([]);
+    // Convert to array if needed
+    let gatewaysArray = selected_gateways;
+    if (typeof selected_gateways === 'string') {
+      try {
+        gatewaysArray = JSON.parse(selected_gateways);
+      } catch {
+        gatewaysArray = [];
+      }
+    }
+    if (!Array.isArray(gatewaysArray)) {
+      gatewaysArray = [];
+    }
     
     const result = await pool.query(
       `INSERT INTO merchants (
         company_name, gmail_username, gmail_app_password,
         admin_reminder_email, self_reminder_time, vendor_reminder_time,
         email_check_frequency, selected_gateways, is_active
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9)
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
       RETURNING *`,
       [
         company_name,
         gmail_username,
         gmail_app_password,
         admin_reminder_email,
-        self_reminder_time,
-        vendor_reminder_time,
-        email_check_frequency,
-        gatewaysJson,
+        self_reminder_time || 360,
+        vendor_reminder_time || 1440,
+        email_check_frequency || 5,
+        gatewaysArray, // Send as array, not JSON string
         true
       ]
     );
@@ -176,18 +185,17 @@ export const updateMerchant = async (req, res) => {
       is_active
     } = req.body;
     
-    // Convert selected_gateways to JSON
-    let gatewaysJson;
+    // Convert to array if needed
+    let gatewaysArray = selected_gateways;
     if (typeof selected_gateways === 'string') {
       try {
-        gatewaysJson = JSON.stringify(JSON.parse(selected_gateways));
+        gatewaysArray = JSON.parse(selected_gateways);
       } catch {
-        gatewaysJson = selected_gateways;
+        gatewaysArray = [];
       }
-    } else if (Array.isArray(selected_gateways)) {
-      gatewaysJson = JSON.stringify(selected_gateways);
-    } else {
-      gatewaysJson = JSON.stringify([]);
+    }
+    if (!Array.isArray(gatewaysArray)) {
+      gatewaysArray = [];
     }
     
     // Build dynamic query - only update password if provided
@@ -204,7 +212,7 @@ export const updateMerchant = async (req, res) => {
            self_reminder_time = $5,
            vendor_reminder_time = $6,
            email_check_frequency = $7,
-           selected_gateways = $8::jsonb,
+           selected_gateways = $8,
            is_active = $9,
            updated_at = NOW()
        WHERE id = $10
@@ -218,7 +226,7 @@ export const updateMerchant = async (req, res) => {
         self_reminder_time,
         vendor_reminder_time,
         email_check_frequency,
-        gatewaysJson,
+        gatewaysArray, // Send as array
         is_active,
         id
       ];
@@ -231,7 +239,7 @@ export const updateMerchant = async (req, res) => {
            self_reminder_time = $4,
            vendor_reminder_time = $5,
            email_check_frequency = $6,
-           selected_gateways = $7::jsonb,
+           selected_gateways = $7,
            is_active = $8,
            updated_at = NOW()
        WHERE id = $9
@@ -244,7 +252,7 @@ export const updateMerchant = async (req, res) => {
         self_reminder_time,
         vendor_reminder_time,
         email_check_frequency,
-        gatewaysJson,
+        gatewaysArray, // Send as array
         is_active,
         id
       ];
@@ -274,6 +282,7 @@ export const updateMerchant = async (req, res) => {
     });
   }
 };
+
 // Delete merchant
 export const deleteMerchant = async (req, res) => {
   try {
