@@ -1,11 +1,10 @@
 import express from 'express';
 import {
-  fetchEmailsForMerchant,
+  fetchMerchantEmails,        // ✅ FIXED: was fetchEmailsForMerchant
   getMerchantThreads,
   getThreadEmails,
   getMerchantEmails,
-  getRecentThreads,
-  testReminderEmail
+  testReminder                // ✅ FIXED: was testReminderEmail
 } from '../controllers/emailController.js';
 import { authenticateToken } from '../middleware/auth.js';
 
@@ -15,13 +14,10 @@ const router = express.Router();
 router.use(authenticateToken);
 
 // Test reminder email (bypasses working hours)
-router.post('/test-reminder/:merchantId', testReminderEmail);
-
-// Get recent threads across ALL merchants
-router.get('/recent', getRecentThreads);
+router.post('/test-reminder/:merchantId', testReminder);  // ✅ FIXED
 
 // Fetch emails for merchant (manual trigger)
-router.post('/fetch/:merchantId', fetchEmailsForMerchant);
+router.post('/fetch/:merchantId', fetchMerchantEmails);  // ✅ FIXED
 
 // Get all threads for merchant
 router.get('/threads/:merchantId', getMerchantThreads);
