@@ -48,31 +48,21 @@ export const testReminder = async (req, res) => {
           
           <div style="padding: 30px;">
             <h2 style="color: #1f2937;">Gmail SMTP Verified ✅</h2>
-            <p>Your email system is working correctly using Gmail SMTP directly!</p>
+            <p>Your email system is working correctly!</p>
             
             <div style="background-color: #f3f4f6; padding: 20px; border-radius: 8px; margin: 20px 0;">
-              <h3 style="margin-top: 0;">System Details:</h3>
+              <h3 style="margin-top: 0;">Details:</h3>
               <ul style="line-height: 1.8;">
                 <li><strong>Merchant:</strong> ${merchant.company_name}</li>
                 <li><strong>Gmail:</strong> ${merchant.gmail_username}</li>
                 <li><strong>Admin Email:</strong> ${merchant.admin_reminder_email}</li>
                 <li><strong>SMTP:</strong> Gmail Direct (Port 465)</li>
-                <li><strong>Status:</strong> ✅ Active</li>
               </ul>
-            </div>
-            
-            <div style="background-color: #d1fae5; border-left: 4px solid #10b981; padding: 15px; margin: 20px 0;">
-              <p style="margin: 0; color: #065f46;">
-                <strong>✅ All Systems Operational!</strong><br>
-                • Admin reminders: Gmail SMTP<br>
-                • Vendor nudges: Gmail SMTP + ChatGPT AI<br>
-                • Emails show in Gmail Sent folder
-              </p>
             </div>
           </div>
           
           <div style="background-color: #f9fafb; padding: 20px; text-align: center; font-size: 12px; color: #6b7280;">
-            <p style="margin: 0;">Email Orchestrator • Powered by Gmail SMTP</p>
+            <p style="margin: 0;">Email Orchestrator</p>
           </div>
         </div>
       `
@@ -82,7 +72,7 @@ export const testReminder = async (req, res) => {
     
     res.json({
       success: true,
-      message: `Test email sent successfully to ${merchant.admin_reminder_email} via Gmail SMTP`
+      message: `Test email sent to ${merchant.admin_reminder_email}`
     });
     
   } catch (error) {
