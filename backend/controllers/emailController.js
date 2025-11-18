@@ -140,43 +140,98 @@ async function saveEmail(merchantId, email, direction, gateway) {
 // Helper function to create or update email thread
 async function createOrUpdateThread(merchantId, email, gateway, direction, vendorEmail, vendorName) {
   try {
-    // Check if thread exists
+    console.log(`🔍 Thread check: ${email.subject} | Thread ID: ${email.threadId} | Direction: ${direction}`);
+    
+    // Normalize subject (remove Re:, Fwd:, etc.)
+    const normalizeSubject = (subject) => {
+      if (!subject) return '';
+      return subject
+        .replace(/^(Re|RE|re|Fwd|FWD|fwd):\s*/gi, '')
+        .trim()
+        .toLowerCase();
+    };
+    
+    const normalizedSubject = normalizeSubject(email.subject);
+    
+    // Check if thread exists by gmail_thread_id OR normalized subject
     const existingThread = await pool.query(
-      'SELECT * FROM email_threads WHERE merchant_id = $1 AND gmail_thread_id = $2',
-      [merchantId, email.threadId]
+      `SELECT * FROM email_threads 
+       WHERE merchant_id = $1 
+       AND (
+         gmail_thread_id = $2 
+         OR LOWER(REGEXP_REPLACE(subject, '^(Re|RE|re|Fwd|FWD|fwd):\\s*', '', 'gi')) = $3
+       )
+       ORDER BY created_at ASC
+       LIMIT 1`,
+      [merchantId, email.threadId, normalizedSubject]
     );
     
     if (existingThread.rows.length > 0) {
-      // Update existing thread
-      const lastActor = direction === 'inbound' ? 'vendor' : 'us';
-      const lastInbound = direction === 'inbound' ? email.date : existingThread.rows[0].last_inbound_at;
-      const lastOutbound = direction === 'outbound' ? email.date : existingThread.rows[0].last_outbound_at;
+      console.log(`♻️ Updating existing thread ID: ${existingThread.rows[0].id}`);
       
+      const thread = existingThread.rows[0];
+      
+      // Determine new values
+      const lastActor = direction === 'inbound' ? 'vendor' : 'us';
+      const lastInbound = direction === 'inbound' ? email.date : thread.last_inbound_at;
+      const lastOutbound = direction === 'outbound' ? email.date : thread.last_outbound_at;
+      
+      // Determine status based on last actor
+      let newStatus = thread.status;
+      if (lastActor === 'vendor') {
+        newStatus = 'waiting_on_us';
+      } else if (lastActor === 'us') {
+        newStatus = 'waiting_on_vendor';
+      }
+      
+      // Update thread
       await pool.query(
         `UPDATE email_threads SET
-          last_actor = $1,
-          last_inbound_at = $2,
-          last_outbound_at = $3,
-          last_activity_at = $4,
+          gmail_thread_id = $1,
+          subject = $2,
+          status = $3,
+          last_actor = $4,
+          last_inbound_at = $5,
+          last_outbound_at = $6,
+          last_activity_at = $7,
+          vendor_email = COALESCE($8, vendor_email),
+          vendor_name = COALESCE($9, vendor_name),
           updated_at = CURRENT_TIMESTAMP
-        WHERE id = $5`,
-        [lastActor, lastInbound, lastOutbound, email.date, existingThread.rows[0].id]
+        WHERE id = $10`,
+        [
+          email.threadId,
+          email.subject.replace(/^(Re|RE|re|Fwd|FWD|fwd):\s*/gi, '').trim() || thread.subject,
+          newStatus,
+          lastActor,
+          lastInbound,
+          lastOutbound,
+          email.date,
+          vendorEmail || thread.vendor_email,
+          vendorName || thread.vendor_name,
+          thread.id
+        ]
       );
+      
+      console.log(`✅ Thread updated: status=${newStatus}, last_actor=${lastActor}`);
+      
     } else {
+      console.log(`✨ Creating new thread: ${email.subject}`);
+      
       // Create new thread
       const lastActor = direction === 'inbound' ? 'vendor' : 'us';
       const status = direction === 'inbound' ? 'waiting_on_us' : 'waiting_on_vendor';
       
-      await pool.query(
+      const result = await pool.query(
         `INSERT INTO email_threads (
           merchant_id, gmail_thread_id, subject, gateway,
           vendor_email, vendor_name, status, last_actor,
           last_inbound_at, last_outbound_at, last_activity_at
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+        RETURNING id`,
         [
           merchantId,
           email.threadId,
-          email.subject,
+          normalizeSubject(email.subject) || email.subject,
           gateway,
           vendorEmail,
           vendorName,
@@ -187,7 +242,10 @@ async function createOrUpdateThread(merchantId, email, gateway, direction, vendo
           email.date
         ]
       );
+      
+      console.log(`✅ Thread created: ID=${result.rows[0].id}, status=${status}`);
     }
+    
   } catch (error) {
     console.error('Create/update thread error:', error);
   }
