@@ -266,6 +266,47 @@ class ReminderChecker {
     }
   }
 
+  // Get FULL conversation history for context-aware AI replies
+  async getConversationHistory(merchantId, threadId) {
+    try {
+      const result = await pool.query(
+        `SELECT from_email, from_name, body_text, snippet, direction, email_date
+         FROM emails 
+         WHERE merchant_id = $1 AND thread_id = $2
+         ORDER BY email_date ASC`,
+        [merchantId, threadId]
+      );
+      
+      if (result.rows.length === 0) {
+        return null;
+      }
+      
+      // Format conversation for AI context
+      const conversation = result.rows.map((email, index) => {
+        const sender = email.direction === 'inbound' 
+          ? `Vendor (${email.from_name || email.from_email})` 
+          : 'Us (PrintKart India)';
+        const content = email.body_text || email.snippet || '(no content)';
+        // Truncate long emails to first 500 chars
+        const truncatedContent = content.length > 500 
+          ? content.substring(0, 500) + '...' 
+          : content;
+        const date = new Date(email.email_date).toLocaleString('en-IN');
+        
+        return `[${index + 1}] ${sender} - ${date}:\n${truncatedContent}`;
+      }).join('\n\n---\n\n');
+      
+      return {
+        emailCount: result.rows.length,
+        lastEmail: result.rows[result.rows.length - 1],
+        conversation: conversation
+      };
+    } catch (error) {
+      console.error('Error getting conversation history:', error);
+      return null;
+    }
+  }
+
   // Get all unique recipients from the thread for Reply-All
   async getAllThreadRecipients(merchantId, threadId, merchantEmail, adminEmail) {
     try {
@@ -470,6 +511,9 @@ class ReminderChecker {
       // Get the last email in thread for proper threading
       const lastEmail = await this.getLastEmailInThread(merchant.id, thread.gmail_thread_id);
       
+      // Get FULL conversation history for AI context
+      const conversationData = await this.getConversationHistory(merchant.id, thread.gmail_thread_id);
+      
       // Get all recipients for Reply-All (excluding our own email and admin email)
       const recipients = await this.getAllThreadRecipients(
         merchant.id, 
@@ -493,6 +537,10 @@ class ReminderChecker {
         console.log(`📧 Reply-All CC: ${recipients.cc.join(', ')}`);
       }
       
+      if (conversationData) {
+        console.log(`📜 Loaded ${conversationData.emailCount} emails for AI context`);
+      }
+      
       // Check OpenAI key
       if (!process.env.OPENAI_API_KEY) {
         console.log('⚠️ OpenAI not configured - using template');
@@ -508,7 +556,12 @@ class ReminderChecker {
       // Get vendor first name for more personal touch
       const vendorFirstName = (thread.vendor_name || 'Team').split(' ')[0];
       
-      console.log(`🤖 Generating professional email via ChatGPT...`);
+      console.log(`🤖 Generating context-aware email via ChatGPT...`);
+      
+      // Build conversation context for AI
+      const conversationContext = conversationData 
+        ? `\n\n=== FULL CONVERSATION HISTORY (${conversationData.emailCount} emails) ===\n${conversationData.conversation}\n=== END OF HISTORY ===`
+        : '\n\n(No conversation history available)';
       
       const completion = await openai.chat.completions.create({
         model: "gpt-4o-mini",
@@ -517,15 +570,19 @@ class ReminderChecker {
             role: "system",
             content: `You are writing a professional business follow-up email for merchant payment gateway onboarding.
 
+READ THE CONVERSATION HISTORY CAREFULLY and write a contextually relevant follow-up.
+
 CRITICAL RULES:
 1. Write ONLY the email body text - absolutely NO "Subject:" line
 2. Start directly with greeting like "Hi ${vendorFirstName}," or "Hello ${vendorFirstName},"
-3. Keep it 3-4 sentences maximum
-4. Sound natural and human, like a real person wrote it
-5. Be polite but appropriately urgent for follow-up #${reminderCount}
-6. NO emojis anywhere
-7. NO mention of "automated" or "system"
-8. Use standard professional English
+3. REFERENCE the actual conversation - what was discussed, what was shared, what's pending
+4. Keep it 3-5 sentences maximum
+5. Sound natural and human, like a real person wrote it
+6. Be polite but appropriately urgent for follow-up #${reminderCount}
+7. NO emojis anywhere
+8. NO mention of "automated" or "system"
+9. Use standard professional English
+10. If we already shared information (like GST, PAN, documents), acknowledge that and ask for next steps
 
 End with EXACTLY this signature format:
 Best regards,
@@ -534,19 +591,24 @@ ${merchant.company_name}`
           },
           {
             role: "user",
-            content: `Write the email body (NO subject line):
+            content: `Write a context-aware follow-up email (NO subject line):
 
-To: ${vendorFirstName}
+To: ${vendorFirstName} at ${thread.vendor_email}
 From: Dipak Bhosale, ${merchant.company_name}
-Context: Following up on merchant onboarding status
-Wait time: ${timeSince} since last communication
+Subject of thread: ${thread.subject}
+Gateway: ${thread.gateway}
+Wait time: ${timeSince} since our last message
 This is follow-up: #${reminderCount}
+${conversationContext}
 
-Write a brief professional email requesting a status update.`
+Based on the conversation history above, write a brief professional follow-up email that:
+- References what was already discussed/shared
+- Asks for specific next steps or status update
+- Sounds like a natural continuation of the conversation`
           }
         ],
         temperature: 0.7,
-        max_tokens: 200
+        max_tokens: 250
       });
       
       let aiContent = completion.choices[0].message.content.trim();
@@ -555,7 +617,7 @@ Write a brief professional email requesting a status update.`
       aiContent = aiContent.replace(/^Subject:.*\n/gi, '').trim();
       aiContent = aiContent.replace(/^Re:.*\n/gi, '').trim();
       
-      console.log(`✅ ChatGPT generated professional email`);
+      console.log(`✅ ChatGPT generated context-aware email`);
       
       // Send via Gmail SMTP with proper threading headers
       const transporter = nodemailer.createTransport({
@@ -606,9 +668,26 @@ ${aiContent.split('\n').map(line => {
       
       // Add threading headers to chain this email to the existing thread
       if (lastEmail && lastEmail.gmail_message_id) {
-        mailOptions.inReplyTo = lastEmail.gmail_message_id;
-        mailOptions.references = lastEmail.gmail_message_id;
-        console.log(`🔗 Threading: In-Reply-To: ${lastEmail.gmail_message_id}`);
+        // Gmail Message-ID should be in format <xxx@xxx>
+        let messageId = lastEmail.gmail_message_id;
+        
+        // Ensure it's properly formatted
+        if (!messageId.startsWith('<')) {
+          messageId = `<${messageId}>`;
+        }
+        
+        mailOptions.inReplyTo = messageId;
+        mailOptions.references = messageId;
+        
+        // Also set the headers object explicitly for nodemailer
+        mailOptions.headers = {
+          'In-Reply-To': messageId,
+          'References': messageId
+        };
+        
+        console.log(`🔗 Threading: In-Reply-To: ${messageId}`);
+      } else {
+        console.log(`⚠️ No message ID found for threading - email will start new thread`);
       }
       
       await transporter.sendMail(mailOptions);
@@ -709,9 +788,26 @@ ${merchant.company_name}`;
       
       // Add threading headers
       if (lastEmail && lastEmail.gmail_message_id) {
-        mailOptions.inReplyTo = lastEmail.gmail_message_id;
-        mailOptions.references = lastEmail.gmail_message_id;
-        console.log(`🔗 Threading: In-Reply-To: ${lastEmail.gmail_message_id}`);
+        // Gmail Message-ID should be in format <xxx@xxx>
+        let messageId = lastEmail.gmail_message_id;
+        
+        // Ensure it's properly formatted
+        if (!messageId.startsWith('<')) {
+          messageId = `<${messageId}>`;
+        }
+        
+        mailOptions.inReplyTo = messageId;
+        mailOptions.references = messageId;
+        
+        // Also set the headers object explicitly for nodemailer
+        mailOptions.headers = {
+          'In-Reply-To': messageId,
+          'References': messageId
+        };
+        
+        console.log(`🔗 Threading: In-Reply-To: ${messageId}`);
+      } else {
+        console.log(`⚠️ No message ID found for threading - email will start new thread`);
       }
       
       await transporter.sendMail(mailOptions);
