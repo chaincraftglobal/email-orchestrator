@@ -3,6 +3,7 @@ import pool from '../config/database.js';
 class ReminderChecker {
   constructor() {
     this.checkInterval = null;
+    this.lastRunTime = null;
     console.log('✅ ReminderChecker initialized');
   }
 
@@ -33,6 +34,14 @@ class ReminderChecker {
   // Check all active merchants
   async checkAllMerchants() {
     try {
+      // Prevent running too frequently (minimum 2 minutes between runs)
+      const now = new Date();
+      if (this.lastRunTime && (now - this.lastRunTime) < 120000) {
+        console.log('⏸️ Skipping - ran too recently');
+        return;
+      }
+      this.lastRunTime = now;
+      
       const result = await pool.query(
         'SELECT * FROM merchants WHERE is_active = true'
       );
@@ -51,6 +60,8 @@ class ReminderChecker {
   async checkThreadsForReminders(merchant) {
     try {
       console.log(`\n🔔 Checking reminders for ${merchant.company_name}...`);
+      console.log(`   Admin Email: ${merchant.admin_reminder_email}`);
+      console.log(`   Merchant Email: ${merchant.gmail_username}`);
       
       // Check if within working hours
       if (!this.isWorkingHours()) {
@@ -82,8 +93,10 @@ class ReminderChecker {
       
       let remindersSent = 0;
       
-      // Process SELF reminders
+      // Process SELF reminders (max 1 per run to avoid spam)
       for (const thread of selfThreads.rows) {
+        if (remindersSent >= 1) break; // Only 1 reminder per check cycle
+        
         if (!thread.last_inbound_at) continue;
         
         const lastInbound = new Date(thread.last_inbound_at);
@@ -108,8 +121,10 @@ class ReminderChecker {
         }
       }
       
-      // Process VENDOR nudges
+      // Process VENDOR nudges (max 1 per run to avoid spam)
       for (const thread of vendorThreads.rows) {
+        if (remindersSent >= 2) break; // Max 2 total reminders per check cycle
+        
         if (await this.shouldSendVendorNudge(merchant, thread)) {
           const lastOutbound = new Date(thread.last_outbound_at);
           const now = new Date();
@@ -144,17 +159,35 @@ class ReminderChecker {
   }
 
   shouldSendSelfReminder(thread, minutesSinceInbound, selfReminderTime) {
-    // First reminder: check if enough time passed since vendor email
-    if (!thread.last_self_reminder_at) {
-      return minutesSinceInbound >= selfReminderTime;
+    // Check if enough time passed since vendor email
+    if (minutesSinceInbound < selfReminderTime) {
+      return false;
     }
     
-    // Subsequent reminders: 6 hour cooldown
+    // First reminder
+    if (!thread.last_self_reminder_at) {
+      return true;
+    }
+    
+    // Subsequent reminders: minimum 6 hour cooldown
     const lastReminder = new Date(thread.last_self_reminder_at);
     const now = new Date();
     const minutesSinceLastReminder = Math.floor((now - lastReminder) / 60000);
     
-    return minutesSinceLastReminder >= 360; // 6 hours
+    // 6 hours = 360 minutes
+    if (minutesSinceLastReminder < 360) {
+      console.log(`⏸️ Self-reminder cooldown: ${minutesSinceLastReminder}/360 min`);
+      return false;
+    }
+    
+    // Max 5 self-reminders per thread
+    const reminderCount = thread.self_reminder_sent_count || 0;
+    if (reminderCount >= 5) {
+      console.log(`🛑 Max self-reminders reached (${reminderCount}/5)`);
+      return false;
+    }
+    
+    return true;
   }
 
   async shouldSendVendorNudge(merchant, thread) {
@@ -172,22 +205,22 @@ class ReminderChecker {
       return false;
     }
     
-    // Check cooldown (30 min for testing, 6 hours for production)
+    // Check cooldown (minimum 30 min for testing, 6 hours for production)
     if (thread.last_vendor_reminder_at) {
       const lastReminder = new Date(thread.last_vendor_reminder_at);
       const minutesSinceLastReminder = Math.floor((now - lastReminder) / 60000);
       const cooldownMinutes = merchant.vendor_reminder_time < 60 ? 30 : 360;
       
       if (minutesSinceLastReminder < cooldownMinutes) {
-        console.log(`⏸️ Thread "${thread.subject}" - Cooldown: ${minutesSinceLastReminder}/${cooldownMinutes} min`);
+        console.log(`⏸️ Vendor nudge cooldown: ${minutesSinceLastReminder}/${cooldownMinutes} min`);
         return false;
       }
     }
     
-    // Max 3 nudges
+    // Max 3 nudges per thread
     const nudgeCount = thread.vendor_reminder_sent_count || 0;
     if (nudgeCount >= 3) {
-      console.log(`🛑 Thread "${thread.subject}" - Max nudges reached (${nudgeCount}/3)`);
+      console.log(`🛑 Max vendor nudges reached (${nudgeCount}/3)`);
       return false;
     }
     
@@ -246,12 +279,16 @@ class ReminderChecker {
       const allRecipients = new Set();
       const allCc = new Set();
       
+      const merchantEmailLower = (merchantEmail || '').toLowerCase();
+      const adminEmailLower = (adminEmail || '').toLowerCase();
+      
       for (const email of result.rows) {
         // Add from_email (but not our own)
-        if (email.from_email && 
-            email.from_email.toLowerCase() !== merchantEmail.toLowerCase() &&
-            email.from_email.toLowerCase() !== adminEmail?.toLowerCase()) {
-          allRecipients.add(email.from_email.toLowerCase());
+        if (email.from_email) {
+          const fromLower = email.from_email.toLowerCase();
+          if (fromLower !== merchantEmailLower && fromLower !== adminEmailLower) {
+            allRecipients.add(email.from_email);
+          }
         }
         
         // Add to_emails
@@ -262,9 +299,9 @@ class ReminderChecker {
           
           if (Array.isArray(toEmails)) {
             for (const to of toEmails) {
-              const addr = (to.address || to).toLowerCase();
-              if (addr !== merchantEmail.toLowerCase() && 
-                  addr !== adminEmail?.toLowerCase()) {
+              const addr = to.address || to;
+              const addrLower = (addr || '').toLowerCase();
+              if (addrLower && addrLower !== merchantEmailLower && addrLower !== adminEmailLower) {
                 allRecipients.add(addr);
               }
             }
@@ -279,9 +316,9 @@ class ReminderChecker {
           
           if (Array.isArray(ccEmails)) {
             for (const cc of ccEmails) {
-              const addr = (cc.address || cc).toLowerCase();
-              if (addr !== merchantEmail.toLowerCase() && 
-                  addr !== adminEmail?.toLowerCase()) {
+              const addr = cc.address || cc;
+              const addrLower = (addr || '').toLowerCase();
+              if (addrLower && addrLower !== merchantEmailLower && addrLower !== adminEmailLower) {
                 allCc.add(addr);
               }
             }
@@ -301,7 +338,22 @@ class ReminderChecker {
 
   async sendSelfReminder(merchant, thread) {
     try {
-      console.log(`📤 Sending self-reminder via Gmail SMTP...`);
+      // IMPORTANT: Self-reminder goes to ADMIN email, not merchant email!
+      const adminEmail = merchant.admin_reminder_email;
+      
+      if (!adminEmail) {
+        console.log('❌ No admin email configured - skipping self-reminder');
+        return false;
+      }
+      
+      // Don't send if admin email is same as merchant email
+      if (adminEmail.toLowerCase() === merchant.gmail_username.toLowerCase()) {
+        console.log('⚠️ Admin email same as merchant email - this would send to yourself!');
+        console.log('   Please set a different admin reminder email in merchant settings.');
+        return false;
+      }
+      
+      console.log(`📤 Sending self-reminder to ADMIN: ${adminEmail}`);
       
       const nodemailer = (await import('nodemailer')).default;
       
@@ -325,7 +377,7 @@ class ReminderChecker {
       );
       
       const lastEmail = emailResult.rows[0];
-      const preview = lastEmail?.snippet || lastEmail?.body_text?.substring(0, 200) || 'No preview';
+      const preview = lastEmail?.snippet || lastEmail?.body_text?.substring(0, 200) || 'No preview available';
       
       const lastInbound = new Date(thread.last_inbound_at);
       const reminderCount = (thread.self_reminder_sent_count || 0) + 1;
@@ -333,37 +385,73 @@ class ReminderChecker {
       
       const mailOptions = {
         from: `${merchant.company_name} <${merchant.gmail_username}>`,
-        to: merchant.admin_reminder_email,
-        subject: `⚠️ Reminder #${reminderCount}: Reply Needed - ${thread.subject}`,
+        to: adminEmail, // ADMIN EMAIL - not merchant email!
+        subject: `⚠️ Action Required: Reply Needed - ${thread.subject}`,
         html: `
-          <div style="font-family: Arial; max-width: 600px; margin: 0 auto;">
-            <div style="background: #667eea; color: white; padding: 20px; text-align: center;">
-              <h1>⚠️ Action Required</h1>
-              <p>Vendor Email Awaiting Your Response</p>
-            </div>
-            <div style="background: #fef3c7; border-left: 4px solid #f59e0b; padding: 15px; margin: 20px;">
-              <strong>⏰ Reminder #${reminderCount}:</strong> No reply for <strong>${timeSince}</strong>
-            </div>
-            <div style="padding: 20px;">
-              <p><strong>Subject:</strong> ${thread.subject}</p>
-              <p><strong>Vendor:</strong> ${thread.vendor_name} &lt;${thread.vendor_email}&gt;</p>
-              <p><strong>Gateway:</strong> ${thread.gateway}</p>
-              <h3>Last Message:</h3>
-              <div style="background: #f3f4f6; padding: 10px; border-left: 3px solid #3b82f6;">
-                ${preview}
-              </div>
-              <p style="margin-top: 20px;">
-                <a href="https://mail.google.com/mail/u/0/#search/${encodeURIComponent(thread.subject)}">
-                  📧 Open in Gmail
-                </a>
-              </p>
-            </div>
-          </div>
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+</head>
+<body style="margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; font-size: 16px; line-height: 1.5; color: #333;">
+  <div style="max-width: 600px; margin: 0 auto; padding: 20px;">
+    
+    <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 30px; text-align: center; border-radius: 8px 8px 0 0;">
+      <h1 style="margin: 0; font-size: 24px; font-weight: 600;">⚠️ Action Required</h1>
+      <p style="margin: 10px 0 0 0; opacity: 0.9;">Vendor email awaiting your response</p>
+    </div>
+    
+    <div style="background: #fef3c7; border-left: 4px solid #f59e0b; padding: 15px 20px; margin: 0;">
+      <strong style="color: #92400e;">⏰ Reminder #${reminderCount}:</strong> 
+      <span style="color: #78350f;">No reply for <strong>${timeSince}</strong></span>
+    </div>
+    
+    <div style="background: #fff; padding: 25px; border: 1px solid #e5e7eb; border-top: none;">
+      <table style="width: 100%; border-collapse: collapse; margin-bottom: 20px;">
+        <tr>
+          <td style="padding: 8px 0; color: #6b7280; width: 100px;">Subject:</td>
+          <td style="padding: 8px 0; font-weight: 600;">${thread.subject}</td>
+        </tr>
+        <tr>
+          <td style="padding: 8px 0; color: #6b7280;">Vendor:</td>
+          <td style="padding: 8px 0;">${thread.vendor_name} &lt;${thread.vendor_email}&gt;</td>
+        </tr>
+        <tr>
+          <td style="padding: 8px 0; color: #6b7280;">Gateway:</td>
+          <td style="padding: 8px 0;"><span style="background: #dbeafe; color: #1e40af; padding: 2px 8px; border-radius: 4px; font-size: 14px;">${thread.gateway}</span></td>
+        </tr>
+      </table>
+      
+      <div style="margin-top: 20px;">
+        <h3 style="margin: 0 0 10px 0; font-size: 14px; color: #6b7280; text-transform: uppercase;">Last Message Preview:</h3>
+        <div style="background: #f9fafb; padding: 15px; border-left: 3px solid #3b82f6; border-radius: 0 4px 4px 0; color: #374151;">
+          ${preview}
+        </div>
+      </div>
+      
+      <div style="margin-top: 25px; text-align: center;">
+        <a href="https://mail.google.com/mail/u/0/#search/${encodeURIComponent(thread.subject)}" 
+           style="display: inline-block; background: #3b82f6; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: 500;">
+          📧 Open in Gmail
+        </a>
+      </div>
+    </div>
+    
+    <div style="background: #f9fafb; padding: 15px; text-align: center; border-radius: 0 0 8px 8px; border: 1px solid #e5e7eb; border-top: none;">
+      <p style="margin: 0; font-size: 12px; color: #9ca3af;">
+        Email Orchestrator • ${merchant.company_name}
+      </p>
+    </div>
+    
+  </div>
+</body>
+</html>
         `
       };
       
       await transporter.sendMail(mailOptions);
-      console.log(`✉️ Self-reminder #${reminderCount} sent to ${merchant.admin_reminder_email}`);
+      console.log(`✉️ Self-reminder #${reminderCount} sent to ${adminEmail}`);
       
       return true;
     } catch (error) {
@@ -374,7 +462,7 @@ class ReminderChecker {
 
   async sendVendorNudge(merchant, thread) {
     try {
-      console.log(`📤 Sending AI-generated vendor nudge as REPLY-ALL...`);
+      console.log(`📤 Sending vendor nudge as REPLY-ALL...`);
       
       const nodemailer = (await import('nodemailer')).default;
       const OpenAI = (await import('openai')).default;
@@ -391,7 +479,7 @@ class ReminderChecker {
       );
       
       // Ensure vendor email is in the TO list
-      if (thread.vendor_email && !recipients.to.includes(thread.vendor_email.toLowerCase())) {
+      if (thread.vendor_email && !recipients.to.map(e => e.toLowerCase()).includes(thread.vendor_email.toLowerCase())) {
         recipients.to.unshift(thread.vendor_email);
       }
       
@@ -417,43 +505,57 @@ class ReminderChecker {
       const timeSince = this.formatTimeSince(lastOutbound);
       const reminderCount = (thread.vendor_reminder_sent_count || 0) + 1;
       
-      console.log(`🤖 Generating email via ChatGPT...`);
+      // Get vendor first name for more personal touch
+      const vendorFirstName = (thread.vendor_name || 'Team').split(' ')[0];
+      
+      console.log(`🤖 Generating professional email via ChatGPT...`);
       
       const completion = await openai.chat.completions.create({
         model: "gpt-4o-mini",
         messages: [
           {
             role: "system",
-            content: `Write a brief, professional follow-up email for merchant onboarding. 
+            content: `You are writing a professional business follow-up email for merchant payment gateway onboarding.
 
-Rules:
-- Keep it short (3-4 sentences max)
-- Sound natural and human
-- Be polite but direct
-- Don't use emojis
-- Don't mention this is automated
-- This is follow-up #${reminderCount}, adjust tone accordingly (more urgent if higher number)
-- Sign as "Best regards,\nDipak Bhosale\n${merchant.company_name}"`
+CRITICAL RULES:
+1. Write ONLY the email body text - absolutely NO "Subject:" line
+2. Start directly with greeting like "Hi ${vendorFirstName}," or "Hello ${vendorFirstName},"
+3. Keep it 3-4 sentences maximum
+4. Sound natural and human, like a real person wrote it
+5. Be polite but appropriately urgent for follow-up #${reminderCount}
+6. NO emojis anywhere
+7. NO mention of "automated" or "system"
+8. Use standard professional English
+
+End with EXACTLY this signature format:
+Best regards,
+Dipak Bhosale
+${merchant.company_name}`
           },
           {
             role: "user",
-            content: `Write a follow-up email:
+            content: `Write the email body (NO subject line):
 
-To: ${thread.vendor_name} at ${thread.vendor_email}
-From: ${merchant.company_name}
-Subject: ${thread.subject}
-Time since last message: ${timeSince}
-Follow-up #${reminderCount}
+To: ${vendorFirstName}
+From: Dipak Bhosale, ${merchant.company_name}
+Context: Following up on merchant onboarding status
+Wait time: ${timeSince} since last communication
+This is follow-up: #${reminderCount}
 
-Request an update on the merchant onboarding status. Keep it brief and professional.`
+Write a brief professional email requesting a status update.`
           }
         ],
         temperature: 0.7,
         max_tokens: 200
       });
       
-      const aiContent = completion.choices[0].message.content.trim();
-      console.log(`✅ ChatGPT generated (${aiContent.length} chars)`);
+      let aiContent = completion.choices[0].message.content.trim();
+      
+      // Remove any "Subject:" line if AI accidentally included it
+      aiContent = aiContent.replace(/^Subject:.*\n/gi, '').trim();
+      aiContent = aiContent.replace(/^Re:.*\n/gi, '').trim();
+      
+      console.log(`✅ ChatGPT generated professional email`);
       
       // Send via Gmail SMTP with proper threading headers
       const transporter = nodemailer.createTransport({
@@ -468,15 +570,33 @@ Request an update on the merchant onboarding status. Keep it brief and professio
         tls: { rejectUnauthorized: false }
       });
       
+      // Clean subject (remove multiple Re: prefixes)
+      let cleanSubject = thread.subject.replace(/^(Re:\s*)+/gi, '').trim();
+      
+      // Build professional HTML email with proper styling
+      const htmlContent = `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+</head>
+<body style="margin: 0; padding: 0;">
+  <div style="font-family: Arial, Helvetica, sans-serif; font-size: 14px; line-height: 1.6; color: #000000;">
+${aiContent.split('\n').map(line => {
+  if (line.trim() === '') return '<br>';
+  return `<div style="margin-bottom: 10px;">${line}</div>`;
+}).join('\n')}
+  </div>
+</body>
+</html>`;
+      
       // Build mail options with Reply-All and proper threading
       const mailOptions = {
         from: `${merchant.company_name} <${merchant.gmail_username}>`,
         to: recipients.to.join(', '),
-        subject: thread.subject.startsWith('Re:') ? thread.subject : `Re: ${thread.subject}`,
+        subject: `Re: ${cleanSubject}`,
         text: aiContent,
-        html: `<div style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
-${aiContent.split('\n').map(line => line.trim() ? `<p style="margin: 0 0 10px 0;">${line}</p>` : '').join('')}
-</div>`
+        html: htmlContent
       };
       
       // Add CC if there are any
@@ -485,30 +605,19 @@ ${aiContent.split('\n').map(line => line.trim() ? `<p style="margin: 0 0 10px 0;
       }
       
       // Add threading headers to chain this email to the existing thread
-      // This is CRITICAL for:
-      // 1. Keeping email in same Gmail thread
-      // 2. Avoiding spam filters
-      // 3. Proper Reply-All behavior
       if (lastEmail && lastEmail.gmail_message_id) {
         mailOptions.inReplyTo = lastEmail.gmail_message_id;
         mailOptions.references = lastEmail.gmail_message_id;
         console.log(`🔗 Threading: In-Reply-To: ${lastEmail.gmail_message_id}`);
       }
       
-      // Add headers to improve deliverability
-      mailOptions.headers = {
-        'X-Priority': '3', // Normal priority
-        'X-Mailer': 'Email Orchestrator',
-        'Precedence': 'bulk' // Indicates this is a business email
-      };
-      
       await transporter.sendMail(mailOptions);
-      console.log(`✉️ AI nudge #${reminderCount} sent to ${recipients.to.join(', ')}`);
+      console.log(`✉️ Vendor nudge #${reminderCount} sent to ${recipients.to.join(', ')}`);
       
       return true;
       
     } catch (error) {
-      console.error('❌ Error sending AI nudge:', error.message);
+      console.error('❌ Error sending vendor nudge:', error.message);
       console.log('⚠️ Falling back to template...');
       
       // Get data for template fallback
@@ -520,7 +629,7 @@ ${aiContent.split('\n').map(line => line.trim() ? `<p style="margin: 0 0 10px 0;
         merchant.admin_reminder_email
       );
       
-      if (thread.vendor_email && !recipients.to.includes(thread.vendor_email.toLowerCase())) {
+      if (thread.vendor_email && !recipients.to.map(e => e.toLowerCase()).includes(thread.vendor_email.toLowerCase())) {
         recipients.to.unshift(thread.vendor_email);
       }
       if (recipients.to.length === 0) {
@@ -549,36 +658,46 @@ ${aiContent.split('\n').map(line => line.trim() ? `<p style="margin: 0 0 10px 0;
       });
       
       const reminderCount = (thread.vendor_reminder_sent_count || 0) + 1;
+      const vendorFirstName = (thread.vendor_name || 'Team').split(' ')[0];
       
-      // Create professional follow-up text
-      const emailText = `Hi ${thread.vendor_name},
+      // Professional email text - NO subject in body
+      const emailText = `Hi ${vendorFirstName},
 
-I hope this email finds you well. I wanted to follow up on our merchant onboarding process for ${merchant.company_name}.
+I hope this email finds you well. I wanted to follow up on the merchant onboarding process for ${merchant.company_name}.
 
-Could you please provide an update on the current status? We're eager to move forward with the integration.
+Could you please provide an update on the current status? We are keen to proceed with the integration at the earliest.
 
 Thank you for your assistance.
 
 Best regards,
 Dipak Bhosale
-${merchant.company_name}
-${merchant.gmail_username}`;
+${merchant.company_name}`;
 
-      const emailHtml = `<div style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
-<p>Hi ${thread.vendor_name},</p>
-<p>I hope this email finds you well. I wanted to follow up on our merchant onboarding process for ${merchant.company_name}.</p>
-<p>Could you please provide an update on the current status? We're eager to move forward with the integration.</p>
-<p>Thank you for your assistance.</p>
-<p>Best regards,<br>
-Dipak Bhosale<br>
-${merchant.company_name}<br>
-${merchant.gmail_username}</p>
-</div>`;
+      // Professional HTML email - standard formatting
+      const emailHtml = `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+</head>
+<body style="margin: 0; padding: 0;">
+  <div style="font-family: Arial, Helvetica, sans-serif; font-size: 14px; line-height: 1.6; color: #000000;">
+    <div style="margin-bottom: 10px;">Hi ${vendorFirstName},</div>
+    <div style="margin-bottom: 10px;">I hope this email finds you well. I wanted to follow up on the merchant onboarding process for ${merchant.company_name}.</div>
+    <div style="margin-bottom: 10px;">Could you please provide an update on the current status? We are keen to proceed with the integration at the earliest.</div>
+    <div style="margin-bottom: 10px;">Thank you for your assistance.</div>
+    <div style="margin-bottom: 0;">Best regards,<br>Dipak Bhosale<br>${merchant.company_name}</div>
+  </div>
+</body>
+</html>`;
+
+      // Clean subject
+      let cleanSubject = thread.subject.replace(/^(Re:\s*)+/gi, '').trim();
 
       const mailOptions = {
         from: `${merchant.company_name} <${merchant.gmail_username}>`,
         to: recipients.to.join(', '),
-        subject: thread.subject.startsWith('Re:') ? thread.subject : `Re: ${thread.subject}`,
+        subject: `Re: ${cleanSubject}`,
         text: emailText,
         html: emailHtml
       };
@@ -594,12 +713,6 @@ ${merchant.gmail_username}</p>
         mailOptions.references = lastEmail.gmail_message_id;
         console.log(`🔗 Threading: In-Reply-To: ${lastEmail.gmail_message_id}`);
       }
-      
-      // Add headers to improve deliverability
-      mailOptions.headers = {
-        'X-Priority': '3',
-        'X-Mailer': 'Email Orchestrator'
-      };
       
       await transporter.sendMail(mailOptions);
       console.log(`✉️ Template nudge #${reminderCount} sent to ${recipients.to.join(', ')}`);
