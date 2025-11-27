@@ -211,6 +211,94 @@ class ReminderChecker {
     }
   }
 
+  // Get the last email in thread for proper threading (Reply-All)
+  async getLastEmailInThread(merchantId, threadId) {
+    try {
+      const result = await pool.query(
+        `SELECT gmail_message_id, from_email, to_emails, cc_emails, subject
+         FROM emails 
+         WHERE merchant_id = $1 AND thread_id = $2
+         ORDER BY email_date DESC 
+         LIMIT 1`,
+        [merchantId, threadId]
+      );
+      
+      if (result.rows.length > 0) {
+        return result.rows[0];
+      }
+      return null;
+    } catch (error) {
+      console.error('Error getting last email:', error);
+      return null;
+    }
+  }
+
+  // Get all unique recipients from the thread for Reply-All
+  async getAllThreadRecipients(merchantId, threadId, merchantEmail, adminEmail) {
+    try {
+      const result = await pool.query(
+        `SELECT DISTINCT from_email, to_emails, cc_emails
+         FROM emails 
+         WHERE merchant_id = $1 AND thread_id = $2`,
+        [merchantId, threadId]
+      );
+      
+      const allRecipients = new Set();
+      const allCc = new Set();
+      
+      for (const email of result.rows) {
+        // Add from_email (but not our own)
+        if (email.from_email && 
+            email.from_email.toLowerCase() !== merchantEmail.toLowerCase() &&
+            email.from_email.toLowerCase() !== adminEmail?.toLowerCase()) {
+          allRecipients.add(email.from_email.toLowerCase());
+        }
+        
+        // Add to_emails
+        try {
+          const toEmails = typeof email.to_emails === 'string' 
+            ? JSON.parse(email.to_emails) 
+            : email.to_emails;
+          
+          if (Array.isArray(toEmails)) {
+            for (const to of toEmails) {
+              const addr = (to.address || to).toLowerCase();
+              if (addr !== merchantEmail.toLowerCase() && 
+                  addr !== adminEmail?.toLowerCase()) {
+                allRecipients.add(addr);
+              }
+            }
+          }
+        } catch (e) {}
+        
+        // Add cc_emails
+        try {
+          const ccEmails = typeof email.cc_emails === 'string' 
+            ? JSON.parse(email.cc_emails) 
+            : email.cc_emails;
+          
+          if (Array.isArray(ccEmails)) {
+            for (const cc of ccEmails) {
+              const addr = (cc.address || cc).toLowerCase();
+              if (addr !== merchantEmail.toLowerCase() && 
+                  addr !== adminEmail?.toLowerCase()) {
+                allCc.add(addr);
+              }
+            }
+          }
+        } catch (e) {}
+      }
+      
+      return {
+        to: Array.from(allRecipients),
+        cc: Array.from(allCc)
+      };
+    } catch (error) {
+      console.error('Error getting thread recipients:', error);
+      return { to: [], cc: [] };
+    }
+  }
+
   async sendSelfReminder(merchant, thread) {
     try {
       console.log(`📤 Sending self-reminder via Gmail SMTP...`);
@@ -286,15 +374,41 @@ class ReminderChecker {
 
   async sendVendorNudge(merchant, thread) {
     try {
-      console.log(`📤 Sending AI-generated vendor nudge...`);
+      console.log(`📤 Sending AI-generated vendor nudge as REPLY-ALL...`);
       
       const nodemailer = (await import('nodemailer')).default;
       const OpenAI = (await import('openai')).default;
       
+      // Get the last email in thread for proper threading
+      const lastEmail = await this.getLastEmailInThread(merchant.id, thread.gmail_thread_id);
+      
+      // Get all recipients for Reply-All (excluding our own email and admin email)
+      const recipients = await this.getAllThreadRecipients(
+        merchant.id, 
+        thread.gmail_thread_id,
+        merchant.gmail_username,
+        merchant.admin_reminder_email
+      );
+      
+      // Ensure vendor email is in the TO list
+      if (thread.vendor_email && !recipients.to.includes(thread.vendor_email.toLowerCase())) {
+        recipients.to.unshift(thread.vendor_email);
+      }
+      
+      // If no recipients found, just use vendor email
+      if (recipients.to.length === 0) {
+        recipients.to = [thread.vendor_email];
+      }
+      
+      console.log(`📧 Reply-All TO: ${recipients.to.join(', ')}`);
+      if (recipients.cc.length > 0) {
+        console.log(`📧 Reply-All CC: ${recipients.cc.join(', ')}`);
+      }
+      
       // Check OpenAI key
       if (!process.env.OPENAI_API_KEY) {
         console.log('⚠️ OpenAI not configured - using template');
-        return await this.sendVendorNudgeTemplate(merchant, thread);
+        return await this.sendVendorNudgeTemplate(merchant, thread, lastEmail, recipients);
       }
       
       const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
@@ -311,26 +425,27 @@ class ReminderChecker {
           {
             role: "system",
             content: `Write a brief, professional follow-up email for merchant onboarding. 
-            
+
 Rules:
 - Keep it short (3-4 sentences max)
 - Sound natural and human
 - Be polite but direct
 - Don't use emojis
 - Don't mention this is automated
-- Sign as "Best regards, Dipak Bhosale, PrintKart India"`
+- This is follow-up #${reminderCount}, adjust tone accordingly (more urgent if higher number)
+- Sign as "Best regards,\nDipak Bhosale\n${merchant.company_name}"`
           },
           {
             role: "user",
             content: `Write a follow-up email:
 
 To: ${thread.vendor_name} at ${thread.vendor_email}
-From: PrintKart India
+From: ${merchant.company_name}
 Subject: ${thread.subject}
 Time since last message: ${timeSince}
 Follow-up #${reminderCount}
 
-Request an update on the merchant onboarding status. Keep it brief.`
+Request an update on the merchant onboarding status. Keep it brief and professional.`
           }
         ],
         temperature: 0.7,
@@ -340,7 +455,7 @@ Request an update on the merchant onboarding status. Keep it brief.`
       const aiContent = completion.choices[0].message.content.trim();
       console.log(`✅ ChatGPT generated (${aiContent.length} chars)`);
       
-      // Send via Gmail SMTP
+      // Send via Gmail SMTP with proper threading headers
       const transporter = nodemailer.createTransport({
         host: 'smtp.gmail.com',
         port: 465,
@@ -353,29 +468,72 @@ Request an update on the merchant onboarding status. Keep it brief.`
         tls: { rejectUnauthorized: false }
       });
       
+      // Build mail options with Reply-All and proper threading
       const mailOptions = {
         from: `${merchant.company_name} <${merchant.gmail_username}>`,
-        to: thread.vendor_email,
-        subject: `Re: ${thread.subject}`,
+        to: recipients.to.join(', '),
+        subject: thread.subject.startsWith('Re:') ? thread.subject : `Re: ${thread.subject}`,
         text: aiContent,
-        html: `<div style="font-family: Arial; line-height: 1.6;">${aiContent.replace(/\n\n/g, '</p><p>').replace(/^/, '<p>').replace(/$/, '</p>')}</div>`
+        html: `<div style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+${aiContent.split('\n').map(line => line.trim() ? `<p style="margin: 0 0 10px 0;">${line}</p>` : '').join('')}
+</div>`
+      };
+      
+      // Add CC if there are any
+      if (recipients.cc.length > 0) {
+        mailOptions.cc = recipients.cc.join(', ');
+      }
+      
+      // Add threading headers to chain this email to the existing thread
+      // This is CRITICAL for:
+      // 1. Keeping email in same Gmail thread
+      // 2. Avoiding spam filters
+      // 3. Proper Reply-All behavior
+      if (lastEmail && lastEmail.gmail_message_id) {
+        mailOptions.inReplyTo = lastEmail.gmail_message_id;
+        mailOptions.references = lastEmail.gmail_message_id;
+        console.log(`🔗 Threading: In-Reply-To: ${lastEmail.gmail_message_id}`);
+      }
+      
+      // Add headers to improve deliverability
+      mailOptions.headers = {
+        'X-Priority': '3', // Normal priority
+        'X-Mailer': 'Email Orchestrator',
+        'Precedence': 'bulk' // Indicates this is a business email
       };
       
       await transporter.sendMail(mailOptions);
-      console.log(`✉️ AI nudge #${reminderCount} sent to ${thread.vendor_email}`);
+      console.log(`✉️ AI nudge #${reminderCount} sent to ${recipients.to.join(', ')}`);
       
       return true;
       
     } catch (error) {
       console.error('❌ Error sending AI nudge:', error.message);
       console.log('⚠️ Falling back to template...');
-      return await this.sendVendorNudgeTemplate(merchant, thread);
+      
+      // Get data for template fallback
+      const lastEmail = await this.getLastEmailInThread(merchant.id, thread.gmail_thread_id);
+      const recipients = await this.getAllThreadRecipients(
+        merchant.id, 
+        thread.gmail_thread_id,
+        merchant.gmail_username,
+        merchant.admin_reminder_email
+      );
+      
+      if (thread.vendor_email && !recipients.to.includes(thread.vendor_email.toLowerCase())) {
+        recipients.to.unshift(thread.vendor_email);
+      }
+      if (recipients.to.length === 0) {
+        recipients.to = [thread.vendor_email];
+      }
+      
+      return await this.sendVendorNudgeTemplate(merchant, thread, lastEmail, recipients);
     }
   }
 
-  async sendVendorNudgeTemplate(merchant, thread) {
+  async sendVendorNudgeTemplate(merchant, thread, lastEmail, recipients) {
     try {
-      console.log(`📤 Sending template vendor nudge...`);
+      console.log(`📤 Sending template vendor nudge as REPLY-ALL...`);
       
       const nodemailer = (await import('nodemailer')).default;
       
@@ -392,16 +550,59 @@ Request an update on the merchant onboarding status. Keep it brief.`
       
       const reminderCount = (thread.vendor_reminder_sent_count || 0) + 1;
       
+      // Create professional follow-up text
+      const emailText = `Hi ${thread.vendor_name},
+
+I hope this email finds you well. I wanted to follow up on our merchant onboarding process for ${merchant.company_name}.
+
+Could you please provide an update on the current status? We're eager to move forward with the integration.
+
+Thank you for your assistance.
+
+Best regards,
+Dipak Bhosale
+${merchant.company_name}
+${merchant.gmail_username}`;
+
+      const emailHtml = `<div style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+<p>Hi ${thread.vendor_name},</p>
+<p>I hope this email finds you well. I wanted to follow up on our merchant onboarding process for ${merchant.company_name}.</p>
+<p>Could you please provide an update on the current status? We're eager to move forward with the integration.</p>
+<p>Thank you for your assistance.</p>
+<p>Best regards,<br>
+Dipak Bhosale<br>
+${merchant.company_name}<br>
+${merchant.gmail_username}</p>
+</div>`;
+
       const mailOptions = {
         from: `${merchant.company_name} <${merchant.gmail_username}>`,
-        to: thread.vendor_email,
-        subject: `Re: ${thread.subject}`,
-        text: `Hi ${thread.vendor_name},\n\nI hope this email finds you well. I wanted to follow up on our merchant onboarding process for ${merchant.company_name}.\n\nCould you please provide an update on the current status? We're eager to move forward with the integration.\n\nThank you for your assistance.\n\nBest regards,\nDipak Bhosale\nPrintKart India\n${merchant.gmail_username}`,
-        html: `<p>Hi ${thread.vendor_name},</p><p>I hope this email finds you well. I wanted to follow up on our merchant onboarding process for ${merchant.company_name}.</p><p>Could you please provide an update on the current status? We're eager to move forward with the integration.</p><p>Thank you for your assistance.</p><p>Best regards,<br>Dipak Bhosale<br>PrintKart India<br>${merchant.gmail_username}</p>`
+        to: recipients.to.join(', '),
+        subject: thread.subject.startsWith('Re:') ? thread.subject : `Re: ${thread.subject}`,
+        text: emailText,
+        html: emailHtml
+      };
+      
+      // Add CC if there are any
+      if (recipients.cc && recipients.cc.length > 0) {
+        mailOptions.cc = recipients.cc.join(', ');
+      }
+      
+      // Add threading headers
+      if (lastEmail && lastEmail.gmail_message_id) {
+        mailOptions.inReplyTo = lastEmail.gmail_message_id;
+        mailOptions.references = lastEmail.gmail_message_id;
+        console.log(`🔗 Threading: In-Reply-To: ${lastEmail.gmail_message_id}`);
+      }
+      
+      // Add headers to improve deliverability
+      mailOptions.headers = {
+        'X-Priority': '3',
+        'X-Mailer': 'Email Orchestrator'
       };
       
       await transporter.sendMail(mailOptions);
-      console.log(`✉️ Template nudge #${reminderCount} sent to ${thread.vendor_email}`);
+      console.log(`✉️ Template nudge #${reminderCount} sent to ${recipients.to.join(', ')}`);
       
       return true;
       
