@@ -2,6 +2,50 @@ import pool from '../config/database.js';
 import GmailService from '../services/gmailService.js';
 import GatewayDetector from '../services/gatewayDetector.js';
 
+// Helper function to check if email should be skipped (reminder/internal email)
+function shouldSkipEmail(email, merchant) {
+  const subject = (email.subject || '').toLowerCase();
+  const fromEmail = (email.from?.address || email.from || '').toLowerCase();
+  const toEmailsStr = JSON.stringify(email.to || []).toLowerCase();
+  
+  // Skip reminder emails sent by our system (check subject patterns)
+  if (subject.includes('reminder') || 
+      subject.includes('reply needed') ||
+      subject.includes('action required') ||
+      subject.includes('email orchestrator')) {
+    console.log(`⏭️ PRE-FILTER: Skipping reminder email: "${email.subject?.substring(0, 50)}..."`);
+    return true;
+  }
+  
+  // Skip if subject starts with special emoji indicators
+  if (email.subject && (
+      email.subject.startsWith('⚠️') || 
+      email.subject.startsWith('🧪') ||
+      email.subject.startsWith('✅'))) {
+    console.log(`⏭️ PRE-FILTER: Skipping system email (emoji prefix): "${email.subject?.substring(0, 50)}..."`);
+    return true;
+  }
+  
+  // Skip emails TO admin reminder email
+  const adminEmail = merchant.admin_reminder_email?.toLowerCase();
+  if (adminEmail && toEmailsStr.includes(adminEmail)) {
+    console.log(`⏭️ PRE-FILTER: Skipping email to admin: ${adminEmail}`);
+    return true;
+  }
+  
+  // Skip emails FROM merchant email TO merchant email (self-sent)
+  const merchantEmail = merchant.gmail_username?.toLowerCase();
+  if (merchantEmail && fromEmail === merchantEmail) {
+    // Check if it's to ourselves or to admin
+    if (toEmailsStr.includes(merchantEmail) || toEmailsStr.includes(adminEmail)) {
+      console.log(`⏭️ PRE-FILTER: Skipping self-sent/internal email`);
+      return true;
+    }
+  }
+  
+  return false;
+}
+
 // Fetch emails for a merchant
 export const fetchMerchantEmails = async (req, res) => {
   try {
@@ -39,9 +83,17 @@ export const fetchMerchantEmails = async (req, res) => {
     // Process and store emails
     let savedCount = 0;
     let gatewayCount = 0;
+    let skippedCount = 0;
     
     // Process inbox emails (inbound)
     for (const email of inboxEmails) {
+      // FIRST: Check if this is a reminder/internal email - skip before detection
+      if (shouldSkipEmail(email, merchant)) {
+        skippedCount++;
+        continue;
+      }
+      
+      // THEN: Check if it's a gateway email
       const gateway = GatewayDetector.detectGateway(email, merchant.selected_gateways);
       
       if (gateway) {
@@ -53,6 +105,13 @@ export const fetchMerchantEmails = async (req, res) => {
     
     // Process sent emails (outbound)
     for (const email of sentEmails) {
+      // FIRST: Check if this is a reminder/internal email - skip before detection
+      if (shouldSkipEmail(email, merchant)) {
+        skippedCount++;
+        continue;
+      }
+      
+      // THEN: Check if it's a gateway email
       const gateway = GatewayDetector.detectGateway(email, merchant.selected_gateways);
       
       if (gateway) {
@@ -67,11 +126,14 @@ export const fetchMerchantEmails = async (req, res) => {
       [merchantId]
     );
     
+    console.log(`✅ Skipped ${skippedCount} reminder/internal emails`);
+    
     res.json({
       success: true,
-      message: `Fetched and saved ${savedCount} emails (${gatewayCount} from inbox, ${savedCount - gatewayCount} from sent)`,
+      message: `Fetched and saved ${savedCount} emails (${gatewayCount} from inbox, ${savedCount - gatewayCount} from sent). Skipped ${skippedCount} system emails.`,
       totalFetched: inboxEmails.length + sentEmails.length,
-      gatewayMatches: savedCount
+      gatewayMatches: savedCount,
+      skipped: skippedCount
     });
     
   } catch (error) {
@@ -87,6 +149,13 @@ export const fetchMerchantEmails = async (req, res) => {
 // Helper function to save email to database
 async function saveEmail(merchantId, email, direction, gateway) {
   try {
+    // Double-check: Skip reminder emails (backup filter)
+    const subject = (email.subject || '').toLowerCase();
+    if (subject.includes('reminder') || subject.includes('reply needed') || subject.includes('action required')) {
+      console.log(`⏭️ SAVE-FILTER: Skipping reminder: "${email.subject?.substring(0, 40)}..."`);
+      return;
+    }
+    
     // Check if email already exists
     const existing = await pool.query(
       'SELECT id FROM emails WHERE gmail_message_id = $1',
