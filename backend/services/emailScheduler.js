@@ -86,6 +86,51 @@ class EmailScheduler {
     console.log('✅ All schedulers stopped');
   }
 
+  // Check if email should be skipped (reminder/internal email)
+  shouldSkipEmail(email, merchant) {
+    const subject = (email.subject || '').toLowerCase();
+    const fromEmail = (email.from?.address || email.from || '').toLowerCase();
+    const toEmailsStr = JSON.stringify(email.to || []).toLowerCase();
+    
+    // Skip reminder emails sent by our system (check subject patterns)
+    if (subject.includes('reminder') || 
+        subject.includes('reply needed') ||
+        subject.includes('action required') ||
+        subject.includes('test') ||
+        subject.includes('email orchestrator')) {
+      console.log(`⏭️ PRE-FILTER: Skipping reminder email: "${email.subject?.substring(0, 50)}..."`);
+      return true;
+    }
+    
+    // Skip if subject starts with special emoji indicators
+    if (email.subject && (
+        email.subject.startsWith('⚠️') || 
+        email.subject.startsWith('🧪') ||
+        email.subject.startsWith('✅'))) {
+      console.log(`⏭️ PRE-FILTER: Skipping system email (emoji prefix): "${email.subject?.substring(0, 50)}..."`);
+      return true;
+    }
+    
+    // Skip emails TO admin reminder email
+    const adminEmail = merchant.admin_reminder_email?.toLowerCase();
+    if (adminEmail && toEmailsStr.includes(adminEmail)) {
+      console.log(`⏭️ PRE-FILTER: Skipping email to admin: ${adminEmail}`);
+      return true;
+    }
+    
+    // Skip emails FROM merchant email TO merchant email (self-sent)
+    const merchantEmail = merchant.gmail_username?.toLowerCase();
+    if (merchantEmail && fromEmail === merchantEmail) {
+      // Check if it's to ourselves
+      if (toEmailsStr.includes(merchantEmail)) {
+        console.log(`⏭️ PRE-FILTER: Skipping self-sent email`);
+        return true;
+      }
+    }
+    
+    return false;
+  }
+
   // Check emails for a merchant (main worker function)
   async checkEmailsForMerchant(merchant) {
     try {
@@ -116,9 +161,14 @@ class EmailScheduler {
       
       // Process inbox (inbound)
       for (const email of inboxEmails) {
+        // FIRST: Check if this is a reminder/internal email - skip before detection
+        if (this.shouldSkipEmail(email, merchant)) {
+          continue;
+        }
+        
+        // THEN: Check if it's a gateway email
         const gateway = GatewayDetector.detectGateway(email, merchant.selected_gateways);
         if (gateway) {
-          // Pass full merchant object for dynamic admin email filtering
           const saved = await this.saveEmail(merchant, email, 'inbound', gateway);
           if (saved) newEmailsCount++;
         }
@@ -126,9 +176,14 @@ class EmailScheduler {
       
       // Process sent (outbound)
       for (const email of sentEmails) {
+        // FIRST: Check if this is a reminder/internal email - skip before detection
+        if (this.shouldSkipEmail(email, merchant)) {
+          continue;
+        }
+        
+        // THEN: Check if it's a gateway email
         const gateway = GatewayDetector.detectGateway(email, merchant.selected_gateways);
         if (gateway) {
-          // Pass full merchant object for dynamic admin email filtering
           const saved = await this.saveEmail(merchant, email, 'outbound', gateway);
           if (saved) newEmailsCount++;
         }
@@ -153,40 +208,11 @@ class EmailScheduler {
   // Save email to database (returns true if new, false if duplicate)
   async saveEmail(merchant, email, direction, gateway) {
     try {
-      // SKIP reminder emails and internal emails
+      // Double-check: Skip reminder emails (backup filter)
       const subject = (email.subject || '').toLowerCase();
-      const fromEmail = (email.from?.address || email.from || '').toLowerCase();
-      const toEmails = JSON.stringify(email.to || []).toLowerCase();
-      
-      // Don't save reminder emails sent by our system
-      if (subject.includes('reminder') || 
-          subject.includes('🧪 test') || 
-          subject.includes('⚠️') ||
-          subject.includes('email orchestrator') ||
-          subject.includes('action required')) {
-        console.log(`⏭️ Skipping reminder email: "${email.subject}"`);
+      if (subject.includes('reminder') || subject.includes('reply needed')) {
+        console.log(`⏭️ SAVE-FILTER: Skipping reminder: "${email.subject?.substring(0, 40)}..."`);
         return false;
-      }
-      
-      // Don't save emails sent TO admin reminder email (DYNAMIC - per merchant)
-      const adminEmail = merchant.admin_reminder_email?.toLowerCase();
-      if (adminEmail && toEmails.includes(adminEmail)) {
-        console.log(`⏭️ Skipping internal email to admin: ${adminEmail}`);
-        return false;
-      }
-      
-      // Don't save emails FROM our own merchant Gmail (system-sent emails)
-      const merchantEmail = merchant.gmail_username?.toLowerCase();
-      if (merchantEmail && fromEmail === merchantEmail && direction === 'outbound') {
-        // Check if this is a reminder we sent (not a regular business reply)
-        if (subject.includes('follow') && subject.includes('re:')) {
-          // This might be an auto-nudge we sent - check more carefully
-          const bodyText = (email.text || '').toLowerCase();
-          if (bodyText.includes('following up') && bodyText.includes('onboarding')) {
-            console.log(`⏭️ Skipping auto-nudge email we sent: "${email.subject}"`);
-            return false;
-          }
-        }
       }
       
       // Check if email already exists
