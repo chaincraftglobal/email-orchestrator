@@ -482,7 +482,7 @@ class ReminderChecker {
       let prompt = `Write a follow-up email for merchant onboarding:
 
 To: ${thread.vendor_name} at ${thread.vendor_email}
-From: PrintKart India
+From: ${merchant.company_name}
 Subject: ${thread.subject}
 Time since last message: ${timeSince}
 Follow-up #${reminderCount}
@@ -505,14 +505,14 @@ Follow-up #${reminderCount}
 CRITICAL RULES:
 - DO NOT include "Subject:" line - the subject is handled separately
 - DO NOT include email headers like "To:", "From:", "Date:"
-- Start directly with the greeting (e.g., "Dear Jeebun," or "Hi Jeebun,")
+- Start directly with the greeting (e.g., "Dear ${thread.vendor_name}," or "Hi ${thread.vendor_name},")
 - Keep it short (3-4 sentences max)
 - Sound natural and human
 - Be polite but direct
 - Reference specific details from conversation history if available (like PAN, Aadhar, GST, documents mentioned)
 - Don't use emojis
 - Don't mention this is automated
-- End with signature: "Best regards,\nDipak Bhosale\nPrintKart India"
+- End with signature: "Best regards,\\n${merchant.company_name}"
 
 OUTPUT FORMAT: Just the email body text, nothing else.`
           },
@@ -535,7 +535,79 @@ OUTPUT FORMAT: Just the email body text, nothing else.`
         .replace(/^Date:.*\n?/im, '')     // Remove "Date: ..." line
         .trim();
       
-      console.log(`✅ ChatGPT generated (${aiContent.length} chars)`);
+      // ============================================
+      // CRITICAL: Email Content Validation Agent
+      // ============================================
+      
+      // Get ALL other merchant names from database
+      const otherMerchantsResult = await pool.query(
+        'SELECT company_name FROM merchants WHERE id != $1',
+        [merchant.id]
+      );
+      
+      // Build blocklist from other merchants' names
+      const otherMerchantNames = [];
+      for (const row of otherMerchantsResult.rows) {
+        const name = row.company_name.toLowerCase();
+        otherMerchantNames.push(name);
+        // Also add variations without spaces
+        otherMerchantNames.push(name.replace(/\s+/g, ''));
+        // Add individual words (for multi-word company names)
+        const words = name.split(/\s+/);
+        if (words.length > 1) {
+          words.forEach(word => {
+            if (word.length > 3) otherMerchantNames.push(word);
+          });
+        }
+      }
+      
+      // Also add common problematic terms that AI might hallucinate
+      const hardcodedBlocks = ['dipak bhosale', 'dipak', 'bhosale'];
+      
+      // Get current merchant name variants for comparison
+      const currentMerchantLower = merchant.company_name.toLowerCase();
+      const currentMerchantWords = currentMerchantLower.split(/\s+/);
+      
+      // Filter out current merchant from the blocklist
+      const blockedNames = [...otherMerchantNames, ...hardcodedBlocks].filter(name => {
+        // Don't block if it's part of current merchant name
+        if (currentMerchantLower.includes(name)) return false;
+        if (currentMerchantWords.some(word => name.includes(word) || word.includes(name))) return false;
+        return true;
+      });
+      
+      console.log(`🔒 Content validation: ${blockedNames.length} names blocked`);
+      
+      // Check if AI content contains any blocked merchant names
+      const aiContentLower = aiContent.toLowerCase();
+      const foundBlockedName = blockedNames.find(name => aiContentLower.includes(name));
+      
+      if (foundBlockedName) {
+        console.log(`🚨 SECURITY ALERT: AI generated content with blocked name "${foundBlockedName}"`);
+        console.log(`🚨 Current merchant: ${merchant.company_name}`);
+        console.log(`🚨 AI Content was: ${aiContent.substring(0, 200)}...`);
+        console.log(`🚨 Rejecting AI content and using safe template instead`);
+        
+        // Fall back to safe template
+        return await this.sendVendorNudgeTemplate(merchant, thread, filteredCC);
+      }
+      
+      // Force correct signature - remove any existing signature and add correct one
+      aiContent = aiContent
+        .replace(/Best regards,[\s\S]*$/i, '')  // Remove everything after "Best regards,"
+        .replace(/Regards,[\s\S]*$/i, '')       // Remove everything after "Regards,"
+        .replace(/Thanks,[\s\S]*$/i, '')        // Remove everything after "Thanks,"
+        .replace(/Thank you,[\s\S]*$/i, '')     // Remove everything after "Thank you,"
+        .replace(/Sincerely,[\s\S]*$/i, '')     // Remove everything after "Sincerely,"
+        .replace(/Warm regards,[\s\S]*$/i, '')  // Remove everything after "Warm regards,"
+        .replace(/Kind regards,[\s\S]*$/i, '')  // Remove everything after "Kind regards,"
+        .trim();
+      
+      // Add correct signature
+      aiContent += `\n\nBest regards,\n${merchant.company_name}`;
+      
+      console.log(`✅ ChatGPT generated and validated (${aiContent.length} chars)`);
+      console.log(`✅ Signature enforced: ${merchant.company_name}`);
       
       // Send via Gmail SMTP
       const transporter = nodemailer.createTransport({
@@ -564,13 +636,31 @@ OUTPUT FORMAT: Just the email body text, nothing else.`
         mailOptions.cc = filteredCC.join(', ');
       }
       
-      // Add threading headers if available
-      if (thread.last_gmail_message_id) {
-        mailOptions.inReplyTo = thread.last_gmail_message_id;
-        mailOptions.references = thread.message_references 
-          ? `${thread.message_references} ${thread.last_gmail_message_id}`
-          : thread.last_gmail_message_id;
-        console.log(`🔗 Threading: In-Reply-To: ${thread.last_gmail_message_id}`);
+      // Add threading headers - get from thread or fetch from emails table
+      let messageIdForReply = thread.last_gmail_message_id;
+      let referencesForReply = thread.message_references;
+      
+      // If not in thread table, try to get from emails table
+      if (!messageIdForReply) {
+        const lastEmailResult = await pool.query(
+          `SELECT gmail_message_id FROM emails 
+           WHERE merchant_id = $1 AND thread_id = $2 
+           ORDER BY email_date DESC LIMIT 1`,
+          [merchant.id, thread.gmail_thread_id]
+        );
+        if (lastEmailResult.rows.length > 0) {
+          messageIdForReply = lastEmailResult.rows[0].gmail_message_id;
+        }
+      }
+      
+      if (messageIdForReply) {
+        mailOptions.inReplyTo = messageIdForReply;
+        mailOptions.references = referencesForReply 
+          ? `${referencesForReply} ${messageIdForReply}`
+          : messageIdForReply;
+        console.log(`🔗 Threading: In-Reply-To: ${messageIdForReply}`);
+      } else {
+        console.log(`⚠️ No message ID found for threading - email may appear as new thread`);
       }
       
       console.log(`📧 TO (vendor): ${thread.vendor_email}`);
@@ -613,8 +703,8 @@ OUTPUT FORMAT: Just the email body text, nothing else.`
         from: `${merchant.company_name} <${merchant.gmail_username}>`,
         to: thread.vendor_email,  // ONLY vendor
         subject: `Re: ${thread.subject}`,
-        text: `Hi ${thread.vendor_name},\n\nI hope this email finds you well. I wanted to follow up on our merchant onboarding process for ${merchant.company_name}.\n\nCould you please provide an update on the current status? We're eager to move forward with the integration.\n\nThank you for your assistance.\n\nBest regards,\nDipak Bhosale\nPrintKart India\n${merchant.gmail_username}`,
-        html: `<p>Hi ${thread.vendor_name},</p><p>I hope this email finds you well. I wanted to follow up on our merchant onboarding process for ${merchant.company_name}.</p><p>Could you please provide an update on the current status? We're eager to move forward with the integration.</p><p>Thank you for your assistance.</p><p>Best regards,<br>Dipak Bhosale<br>PrintKart India<br>${merchant.gmail_username}</p>`
+        text: `Hi ${thread.vendor_name},\n\nI hope this email finds you well. I wanted to follow up on our merchant onboarding process for ${merchant.company_name}.\n\nCould you please provide an update on the current status? We're eager to move forward with the integration.\n\nThank you for your assistance.\n\nBest regards,\n${merchant.company_name}\n${merchant.gmail_username}`,
+        html: `<p>Hi ${thread.vendor_name},</p><p>I hope this email finds you well. I wanted to follow up on our merchant onboarding process for ${merchant.company_name}.</p><p>Could you please provide an update on the current status? We're eager to move forward with the integration.</p><p>Thank you for your assistance.</p><p>Best regards,<br>${merchant.company_name}<br>${merchant.gmail_username}</p>`
       };
       
       // Add CC only if there are external stakeholders
@@ -622,12 +712,29 @@ OUTPUT FORMAT: Just the email body text, nothing else.`
         mailOptions.cc = filteredCC.join(', ');
       }
       
-      // Add threading headers if available
-      if (thread.last_gmail_message_id) {
-        mailOptions.inReplyTo = thread.last_gmail_message_id;
-        mailOptions.references = thread.message_references 
-          ? `${thread.message_references} ${thread.last_gmail_message_id}`
-          : thread.last_gmail_message_id;
+      // Add threading headers - get from thread or fetch from emails table
+      let messageIdForReply = thread.last_gmail_message_id;
+      let referencesForReply = thread.message_references;
+      
+      // If not in thread table, try to get from emails table
+      if (!messageIdForReply) {
+        const lastEmailResult = await pool.query(
+          `SELECT gmail_message_id FROM emails 
+           WHERE merchant_id = $1 AND thread_id = $2 
+           ORDER BY email_date DESC LIMIT 1`,
+          [merchant.id, thread.gmail_thread_id]
+        );
+        if (lastEmailResult.rows.length > 0) {
+          messageIdForReply = lastEmailResult.rows[0].gmail_message_id;
+        }
+      }
+      
+      if (messageIdForReply) {
+        mailOptions.inReplyTo = messageIdForReply;
+        mailOptions.references = referencesForReply 
+          ? `${referencesForReply} ${messageIdForReply}`
+          : messageIdForReply;
+        console.log(`🔗 Threading: In-Reply-To: ${messageIdForReply}`);
       }
       
       console.log(`📧 TO (vendor): ${thread.vendor_email}`);
