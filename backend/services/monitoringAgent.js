@@ -300,31 +300,41 @@ class MonitoringAgent {
   async checkReminderSystem() {
     try {
       // Check if reminders are being sent when expected
-      const result = await pool.query(`
-        SELECT 
-          COUNT(*) FILTER (WHERE status = 'waiting_on_us' AND self_reminder_sent_count = 0 
-            AND last_inbound_at < NOW() - INTERVAL '1 hour') as overdue_self_reminders,
-          COUNT(*) FILTER (WHERE status = 'waiting_on_vendor' AND vendor_reminder_sent_count = 0 
-            AND last_outbound_at < NOW() - INTERVAL '2 days') as overdue_vendor_nudges
+      const selfResult = await pool.query(`
+        SELECT COUNT(*) as count
         FROM email_threads
-        WHERE is_completed = false
+        WHERE status = 'waiting_on_us' 
+        AND COALESCE(self_reminder_sent_count, 0) = 0 
+        AND last_inbound_at < NOW() - INTERVAL '1 hour'
+        AND COALESCE(is_completed, false) = false
       `);
       
-      const { overdue_self_reminders, overdue_vendor_nudges } = result.rows[0];
+      const vendorResult = await pool.query(`
+        SELECT COUNT(*) as count
+        FROM email_threads
+        WHERE status = 'waiting_on_vendor' 
+        AND COALESCE(vendor_reminder_sent_count, 0) = 0 
+        AND last_outbound_at < NOW() - INTERVAL '2 days'
+        AND COALESCE(is_completed, false) = false
+      `);
       
-      if (parseInt(overdue_self_reminders) > 0 || parseInt(overdue_vendor_nudges) > 0) {
+      const overdueSelf = parseInt(selfResult.rows[0].count) || 0;
+      const overdueVendor = parseInt(vendorResult.rows[0].count) || 0;
+      
+      if (overdueSelf > 0 || overdueVendor > 0) {
         return {
           healthy: false,
           message: 'Some reminders may not be sending',
           details: [
-            `Overdue self-reminders: ${overdue_self_reminders}`,
-            `Overdue vendor nudges: ${overdue_vendor_nudges}`
+            `Overdue self-reminders: ${overdueSelf}`,
+            `Overdue vendor nudges: ${overdueVendor}`
           ]
         };
       }
       
       return { healthy: true };
     } catch (error) {
+      console.error('checkReminderSystem error:', error.message);
       return { healthy: false, message: 'Failed to check reminder system', details: [error.message] };
     }
   }
