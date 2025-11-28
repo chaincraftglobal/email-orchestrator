@@ -762,16 +762,16 @@ OUTPUT FORMAT: Just the email body text, nothing else.`
     const hour = istTime.getUTCHours();
     
     console.log(`   🕐 Current IST: Day=${day} (0=Sun), Hour=${hour}`);
-    console.log(`   🕐 Working hours: Mon-Sat (1-6), 9AM-7PM (9-19)`);
+    console.log(`   🕐 Working hours: Mon-Sat (1-6), 9AM-9PM (9-21)`);
     
-    // Monday-Saturday, 9 AM - 7 PM IST
+    // Monday-Saturday, 9 AM - 9 PM IST
     if (day === 0) { // Sunday
       console.log(`   ❌ Sunday - not working day`);
       return false;
     }
     
-    if (hour < 9 || hour >= 19) {
-      console.log(`   ❌ Hour ${hour} outside 9-19 range`);
+    if (hour < 9 || hour >= 21) {
+      console.log(`   ❌ Hour ${hour} outside 9-21 range`);
       return false;
     }
     
