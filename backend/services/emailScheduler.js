@@ -86,6 +86,16 @@ class EmailScheduler {
     console.log('✅ All schedulers stopped');
   }
 
+  // Normalize subject - remove Re:, Fwd:, etc. for matching
+  normalizeSubject(subject) {
+    if (!subject) return '';
+    return subject
+      .replace(/^(Re|RE|re|Fwd|FWD|fwd|Fw|FW|fw):\s*/gi, '')
+      .replace(/^(Re|RE|re|Fwd|FWD|fwd|Fw|FW|fw):\s*/gi, '') // Run twice for "Re: Re:"
+      .trim()
+      .toLowerCase();
+  }
+
   // Check emails for a merchant (main worker function)
   async checkEmailsForMerchant(merchant) {
     try {
@@ -111,49 +121,51 @@ class EmailScheduler {
       const sentEmails = await gmailService.fetchSentEmails(20);
       console.log(`📤 Fetched ${sentEmails.length} sent emails`);
       
-      // Get existing thread IDs for this merchant (to match outbound emails)
+      // Get existing threads for this merchant (for thread matching)
       const existingThreads = await pool.query(
-        'SELECT gmail_thread_id, gateway FROM email_threads WHERE merchant_id = $1',
+        'SELECT id, gmail_thread_id, subject, gateway, vendor_email FROM email_threads WHERE merchant_id = $1',
         [merchant.id]
       );
-      const threadMap = new Map();
+      
+      // Build maps for quick lookup
+      const threadByGmailId = new Map();
+      const threadBySubject = new Map();
+      
       for (const t of existingThreads.rows) {
-        threadMap.set(t.gmail_thread_id, t.gateway);
+        threadByGmailId.set(t.gmail_thread_id, t);
+        const normalizedSubject = this.normalizeSubject(t.subject);
+        if (normalizedSubject) {
+          threadBySubject.set(normalizedSubject, t);
+        }
       }
-      console.log(`📋 Found ${threadMap.size} existing gateway threads`);
       
       // Process and store new emails
       let newEmailsCount = 0;
       
-      // Process inbox (inbound) - use gateway detection
+      // Process inbox (inbound)
       for (const email of inboxEmails) {
         const gateway = GatewayDetector.detectGateway(email, merchant.selected_gateways);
         if (gateway) {
-          const saved = await this.saveEmail(merchant.id, email, 'inbound', gateway);
+          const saved = await this.saveEmail(merchant.id, email, 'inbound', gateway, threadByGmailId, threadBySubject);
           if (saved) newEmailsCount++;
         }
       }
       
-      // Process sent (outbound) - match by thread_id to existing threads
+      // Process sent (outbound) - match by thread_id OR normalized subject
       for (const email of sentEmails) {
-        // First check if this email belongs to an existing gateway thread
-        const threadGateway = threadMap.get(email.threadId);
+        // First check by Gmail thread ID
+        let matchedThread = threadByGmailId.get(email.threadId);
         
-        if (threadGateway) {
-          // This is a reply to an existing gateway thread
-          console.log(`🔍 Outbound email matches thread: "${email.subject}" → ${threadGateway}`);
-          const saved = await this.saveEmail(merchant.id, email, 'outbound', threadGateway);
-          if (saved) {
-            newEmailsCount++;
-            console.log(`✅ Saved outbound email to ${threadGateway} thread`);
-          }
-        } else {
-          // Also try gateway detection for new outbound threads (less common)
-          const gateway = GatewayDetector.detectGateway(email, merchant.selected_gateways);
-          if (gateway) {
-            const saved = await this.saveEmail(merchant.id, email, 'outbound', gateway);
-            if (saved) newEmailsCount++;
-          }
+        // If not found, check by normalized subject
+        if (!matchedThread) {
+          const normalizedSubject = this.normalizeSubject(email.subject);
+          matchedThread = threadBySubject.get(normalizedSubject);
+        }
+        
+        if (matchedThread) {
+          console.log(`🔍 Outbound email matches thread: "${email.subject}" → ${matchedThread.gateway}`);
+          const saved = await this.saveEmail(merchant.id, email, 'outbound', matchedThread.gateway, threadByGmailId, threadBySubject);
+          if (saved) newEmailsCount++;
         }
       }
       
@@ -174,7 +186,7 @@ class EmailScheduler {
   }
 
   // Save email to database (returns true if new, false if duplicate)
-  async saveEmail(merchantId, email, direction, gateway) {
+  async saveEmail(merchantId, email, direction, gateway, threadByGmailId, threadBySubject) {
     try {
       // SKIP reminder emails and internal emails
       const subject = (email.subject || '').toLowerCase();
@@ -187,8 +199,9 @@ class EmailScheduler {
           subject.includes('⚠️') ||
           subject.includes('email orchestrator') ||
           subject.includes('action required') ||
-          subject.includes('reply needed')) {
-        console.log(`⏭️ Skipping reminder email: "${email.subject}"`);
+          subject.includes('[warning]') ||
+          subject.includes('[critical]')) {
+        console.log(`⏭️ Skipping system email: "${email.subject}"`);
         return false;
       }
       
@@ -236,10 +249,8 @@ class EmailScheduler {
         ]
       );
       
-      console.log(`💾 Saved ${direction} email: "${email.subject}" (${gateway})`);
-      
-      // Update or create thread
-      await this.updateThread(merchantId, email, gateway, direction);
+      // Update or create thread (with deduplication)
+      await this.updateThread(merchantId, email, gateway, direction, threadByGmailId, threadBySubject);
       
       return true; // New email saved
     } catch (error) {
@@ -248,28 +259,48 @@ class EmailScheduler {
     }
   }
 
-  // Update thread status
-  async updateThread(merchantId, email, gateway, direction) {
+  // Update thread status - WITH DEDUPLICATION BY NORMALIZED SUBJECT
+  async updateThread(merchantId, email, gateway, direction, threadByGmailId, threadBySubject) {
     try {
       const vendorEmail = email.from.address || '';
       const vendorName = email.from.name || email.from.address || 'Unknown';
+      const normalizedSubject = this.normalizeSubject(email.subject);
       
-      // Check if thread exists
-      const existing = await pool.query(
-        'SELECT * FROM email_threads WHERE merchant_id = $1 AND gmail_thread_id = $2',
-        [merchantId, email.threadId]
-      );
+      // First: Check if thread exists by Gmail thread ID
+      let existingThread = threadByGmailId.get(email.threadId);
       
-      if (existing.rows.length > 0) {
+      // Second: If not found, check by normalized subject (to prevent duplicates)
+      if (!existingThread && normalizedSubject) {
+        existingThread = threadBySubject.get(normalizedSubject);
+        
+        if (existingThread) {
+          console.log(`🔗 Found existing thread by subject match: "${normalizedSubject}"`);
+          // Update the Gmail thread ID to link them
+          await pool.query(
+            'UPDATE email_threads SET gmail_thread_id = $1 WHERE id = $2',
+            [email.threadId, existingThread.id]
+          );
+        }
+      }
+      
+      if (existingThread) {
         // Update existing thread
-        const thread = existing.rows[0];
         const lastActor = direction === 'inbound' ? 'vendor' : 'us';
         const status = direction === 'inbound' ? 'waiting_on_us' : 'waiting_on_vendor';
         
-        // If we replied, clear hot flag and reset self-reminder tracking
-        const isHot = direction === 'outbound' ? false : thread.is_hot;
+        // If we replied, clear hot flag and reset vendor reminder tracking
+        const updates = direction === 'outbound' 
+          ? {
+              is_hot: false,
+              vendor_reminder_sent_count: 0,  // Reset vendor reminders when we reply
+              last_vendor_reminder_at: null
+            }
+          : {
+              self_reminder_sent_count: 0,  // Reset self reminders when vendor replies
+              last_self_reminder_at: null
+            };
         
-        console.log(`🔄 Updating thread: status=${status}, last_actor=${lastActor}`);
+        console.log(`🔄 Updating thread ID ${existingThread.id}: status=${status}, last_actor=${lastActor}`);
         
         await pool.query(
           `UPDATE email_threads SET
@@ -279,20 +310,28 @@ class EmailScheduler {
             last_inbound_at = $4,
             last_outbound_at = $5,
             last_activity_at = $6,
+            self_reminder_sent_count = COALESCE($7, self_reminder_sent_count),
+            last_self_reminder_at = $8,
+            vendor_reminder_sent_count = COALESCE($9, vendor_reminder_sent_count),
+            last_vendor_reminder_at = $10,
             updated_at = CURRENT_TIMESTAMP
-          WHERE id = $7`,
+          WHERE id = $11`,
           [
             lastActor,
             status,
-            isHot,
-            direction === 'inbound' ? email.date : thread.last_inbound_at,
-            direction === 'outbound' ? email.date : thread.last_outbound_at,
+            direction === 'outbound' ? false : existingThread.is_hot,
+            direction === 'inbound' ? email.date : existingThread.last_inbound_at,
+            direction === 'outbound' ? email.date : existingThread.last_outbound_at,
             email.date,
-            thread.id
+            direction === 'inbound' ? 0 : null,
+            direction === 'inbound' ? null : undefined,
+            direction === 'outbound' ? 0 : null,
+            direction === 'outbound' ? null : undefined,
+            existingThread.id
           ]
         );
         
-        console.log(`✅ Thread updated: "${thread.subject}" → ${status}`);
+        console.log(`✅ Thread updated: "${existingThread.subject}" → ${status}`);
       } else {
         // Create new thread
         const lastActor = direction === 'inbound' ? 'vendor' : 'us';
@@ -307,16 +346,18 @@ class EmailScheduler {
           finalVendorName = email.to[0].name || finalVendorEmail;
         }
         
-        await pool.query(
+        // Store normalized subject for future matching
+        const result = await pool.query(
           `INSERT INTO email_threads (
             merchant_id, gmail_thread_id, subject, gateway,
             vendor_email, vendor_name, status, last_actor,
             last_inbound_at, last_outbound_at, last_activity_at
-          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+          RETURNING id`,
           [
             merchantId,
             email.threadId,
-            email.subject,
+            email.subject.replace(/^(Re|RE|re|Fwd|FWD|fwd|Fw|FW|fw):\s*/gi, '').trim(), // Store clean subject
             gateway,
             finalVendorEmail,
             finalVendorName,
@@ -328,7 +369,20 @@ class EmailScheduler {
           ]
         );
         
-        console.log(`✨ New thread created: "${email.subject}" → ${status}`);
+        console.log(`✨ New thread created: ID=${result.rows[0].id}, "${email.subject}" → ${status}`);
+        
+        // Add to maps for future matching in this session
+        const newThread = {
+          id: result.rows[0].id,
+          gmail_thread_id: email.threadId,
+          subject: email.subject,
+          gateway: gateway,
+          vendor_email: finalVendorEmail
+        };
+        threadByGmailId.set(email.threadId, newThread);
+        if (normalizedSubject) {
+          threadBySubject.set(normalizedSubject, newThread);
+        }
       }
     } catch (error) {
       console.error('Error updating thread:', error);

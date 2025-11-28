@@ -129,13 +129,34 @@ class ReminderChecker {
         }
       }
       
-      // Process VENDOR nudges
+      // Process VENDOR nudges - with deduplication
+      // First, group threads by vendor email to prevent duplicate nudges
+      const vendorThreadGroups = new Map();
+      for (const thread of vendorThreads.rows) {
+        const vendorEmail = (thread.vendor_email || '').toLowerCase();
+        if (!vendorThreadGroups.has(vendorEmail)) {
+          vendorThreadGroups.set(vendorEmail, []);
+        }
+        vendorThreadGroups.get(vendorEmail).push(thread);
+      }
+      
+      // Track which vendors we've already nudged this cycle
+      const nudgedVendors = new Set();
+      
       for (const thread of vendorThreads.rows) {
         console.log(`\n   📧 Checking vendor thread: "${thread.subject}"`);
         console.log(`      Status: ${thread.status}`);
         console.log(`      Last Outbound: ${thread.last_outbound_at}`);
         console.log(`      Last Vendor Reminder: ${thread.last_vendor_reminder_at}`);
         console.log(`      Vendor Reminder Count: ${thread.vendor_reminder_sent_count || 0}`);
+        
+        const vendorEmail = (thread.vendor_email || '').toLowerCase();
+        
+        // Check if we've already nudged this vendor in this cycle
+        if (nudgedVendors.has(vendorEmail)) {
+          console.log(`      ⏭️ SKIP: Already nudged ${vendorEmail} this cycle`);
+          continue;
+        }
         
         const shouldSend = await this.shouldSendVendorNudge(merchant, thread);
         console.log(`      📊 Should send vendor nudge: ${shouldSend}`);
@@ -146,6 +167,9 @@ class ReminderChecker {
           const minutesSinceOutbound = Math.floor((now - lastOutbound) / 60000);
           
           console.log(`⚠️ Thread "${thread.subject}" needs vendor nudge (${minutesSinceOutbound} min since our reply)`);
+          
+          // Mark this vendor as nudged to prevent duplicates
+          nudgedVendors.add(vendorEmail);
           
           const sent = await this.sendVendorNudge(merchant, thread);
           if (sent) {
