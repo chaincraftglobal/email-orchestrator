@@ -2,13 +2,13 @@ import pool from '../config/database.js';
 import GmailService from '../services/gmailService.js';
 import GatewayDetector from '../services/gatewayDetector.js';
 
-// Helper function to check if email should be skipped (reminder/internal email)
+// Helper function to check if email should be skipped (reminders, self-sent, etc.)
 function shouldSkipEmail(email, merchant) {
   const subject = (email.subject || '').toLowerCase();
   const fromEmail = (email.from?.address || email.from || '').toLowerCase();
-  const toEmailsStr = JSON.stringify(email.to || []).toLowerCase();
+  const toEmails = JSON.stringify(email.to || []).toLowerCase();
   
-  // Skip reminder emails sent by our system (check subject patterns)
+  // Skip reminder emails by subject
   if (subject.includes('reminder') || 
       subject.includes('reply needed') ||
       subject.includes('action required') ||
@@ -17,28 +17,27 @@ function shouldSkipEmail(email, merchant) {
     return true;
   }
   
-  // Skip if subject starts with special emoji indicators
-  if (email.subject && (
-      email.subject.startsWith('⚠️') || 
-      email.subject.startsWith('🧪') ||
-      email.subject.startsWith('✅'))) {
-    console.log(`⏭️ PRE-FILTER: Skipping system email (emoji prefix): "${email.subject?.substring(0, 50)}..."`);
+  // Skip emails with reminder emoji prefixes
+  if (subject.startsWith('⚠️') || 
+      subject.startsWith('🧪') || 
+      subject.startsWith('✅')) {
+    console.log(`⏭️ PRE-FILTER: Skipping emoji-prefixed email: "${email.subject?.substring(0, 50)}..."`);
     return true;
   }
   
-  // Skip emails TO admin reminder email
-  const adminEmail = merchant.admin_reminder_email?.toLowerCase();
-  if (adminEmail && toEmailsStr.includes(adminEmail)) {
+  // Skip emails sent TO admin reminder email
+  const adminEmail = (merchant.admin_reminder_email || '').toLowerCase();
+  if (adminEmail && toEmails.includes(adminEmail)) {
     console.log(`⏭️ PRE-FILTER: Skipping email to admin: ${adminEmail}`);
     return true;
   }
   
-  // Skip emails FROM merchant email TO merchant email (self-sent)
-  const merchantEmail = merchant.gmail_username?.toLowerCase();
-  if (merchantEmail && fromEmail === merchantEmail) {
-    // Check if it's to ourselves or to admin
-    if (toEmailsStr.includes(merchantEmail) || toEmailsStr.includes(adminEmail)) {
-      console.log(`⏭️ PRE-FILTER: Skipping self-sent/internal email`);
+  // Skip self-sent emails (from merchant to merchant or to admin)
+  const merchantEmail = (merchant.gmail_username || '').toLowerCase();
+  if (fromEmail === merchantEmail) {
+    // Check if it's sent to ourselves or admin
+    if (toEmails.includes(merchantEmail) || toEmails.includes(adminEmail)) {
+      console.log(`⏭️ PRE-FILTER: Skipping self-sent email`);
       return true;
     }
   }
@@ -81,13 +80,13 @@ export const fetchMerchantEmails = async (req, res) => {
     const sentEmails = await gmailService.fetchSentEmails(50);
     
     // Process and store emails
-    let savedCount = 0;
-    let gatewayCount = 0;
+    let newEmailsCount = 0;
+    let newThreadsCount = 0;
     let skippedCount = 0;
     
     // Process inbox emails (inbound)
     for (const email of inboxEmails) {
-      // FIRST: Check if this is a reminder/internal email - skip before detection
+      // FIRST: Skip reminder/internal emails
       if (shouldSkipEmail(email, merchant)) {
         skippedCount++;
         continue;
@@ -97,15 +96,15 @@ export const fetchMerchantEmails = async (req, res) => {
       const gateway = GatewayDetector.detectGateway(email, merchant.selected_gateways);
       
       if (gateway) {
-        gatewayCount++;
-        await saveEmail(merchant.id, email, 'inbound', gateway);
-        savedCount++;
+        const result = await saveEmail(merchant.id, email, 'inbound', gateway);
+        if (result.isNew) newEmailsCount++;
+        if (result.isNewThread) newThreadsCount++;
       }
     }
     
     // Process sent emails (outbound)
     for (const email of sentEmails) {
-      // FIRST: Check if this is a reminder/internal email - skip before detection
+      // FIRST: Skip reminder/internal emails
       if (shouldSkipEmail(email, merchant)) {
         skippedCount++;
         continue;
@@ -115,8 +114,8 @@ export const fetchMerchantEmails = async (req, res) => {
       const gateway = GatewayDetector.detectGateway(email, merchant.selected_gateways);
       
       if (gateway) {
-        await saveEmail(merchant.id, email, 'outbound', gateway);
-        savedCount++;
+        const result = await saveEmail(merchant.id, email, 'outbound', gateway);
+        if (result.isNew) newEmailsCount++;
       }
     }
     
@@ -126,21 +125,26 @@ export const fetchMerchantEmails = async (req, res) => {
       [merchantId]
     );
     
-    console.log(`✅ Skipped ${skippedCount} reminder/internal emails`);
+    console.log(`✅ ${merchant.company_name}: Found ${newEmailsCount} new gateway emails, ${newThreadsCount} new threads, skipped ${skippedCount} internal emails`);
     
+    // Return response in format expected by frontend
     res.json({
       success: true,
-      message: `Fetched and saved ${savedCount} emails (${gatewayCount} from inbox, ${savedCount - gatewayCount} from sent). Skipped ${skippedCount} system emails.`,
+      message: `Fetched ${inboxEmails.length + sentEmails.length} emails`,
+      data: {
+        newEmails: newEmailsCount,
+        newThreads: newThreadsCount,
+        skipped: skippedCount
+      },
       totalFetched: inboxEmails.length + sentEmails.length,
-      gatewayMatches: savedCount,
-      skipped: skippedCount
+      gatewayMatches: newEmailsCount
     });
     
   } catch (error) {
     console.error('Fetch emails error:', error);
     res.status(500).json({
       success: false,
-      message: 'Failed to fetch emails',
+      message: 'Failed to fetch emails: ' + error.message,
       error: error.message
     });
   }
@@ -149,11 +153,13 @@ export const fetchMerchantEmails = async (req, res) => {
 // Helper function to save email to database
 async function saveEmail(merchantId, email, direction, gateway) {
   try {
-    // Double-check: Skip reminder emails (backup filter)
+    // Double-check: skip reminder emails
     const subject = (email.subject || '').toLowerCase();
-    if (subject.includes('reminder') || subject.includes('reply needed') || subject.includes('action required')) {
-      console.log(`⏭️ SAVE-FILTER: Skipping reminder: "${email.subject?.substring(0, 40)}..."`);
-      return;
+    if (subject.includes('reminder') || 
+        subject.includes('action required') ||
+        subject.startsWith('⚠️')) {
+      console.log(`⏭️ SAVE-FILTER: Skipping reminder: "${email.subject?.substring(0, 50)}..."`);
+      return { isNew: false, isNewThread: false };
     }
     
     // Check if email already exists
@@ -163,7 +169,7 @@ async function saveEmail(merchantId, email, direction, gateway) {
     );
     
     if (existing.rows.length > 0) {
-      return; // Email already exists
+      return { isNew: false, isNewThread: false }; // Email already exists
     }
     
     // Extract vendor info
@@ -183,33 +189,36 @@ async function saveEmail(merchantId, email, direction, gateway) {
         email.messageId,
         email.threadId,
         email.subject,
-        email.from.address || '',
-        email.from.name || '',
-        JSON.stringify(email.to),
-        JSON.stringify(email.cc),
-        email.text,
-        email.html,
+        email.from?.address || email.from || '',
+        email.from?.name || '',
+        JSON.stringify(email.to || []),
+        JSON.stringify(email.cc || []),
+        email.text || '',
+        email.html || '',
         email.text?.substring(0, 200) || '',
         direction,
         gateway,
-        email.attachments.length > 0,
-        JSON.stringify(email.attachments),
+        (email.attachments?.length || 0) > 0,
+        JSON.stringify(email.attachments || []),
         email.date
       ]
     );
     
     // Create or update email thread
-    await createOrUpdateThread(merchantId, email, gateway, direction, vendorEmail, vendorName);
+    const isNewThread = await createOrUpdateThread(merchantId, email, gateway, direction, vendorEmail, vendorName);
+    
+    return { isNew: true, isNewThread };
     
   } catch (error) {
     console.error('Save email error:', error);
+    return { isNew: false, isNewThread: false };
   }
 }
 
 // Helper function to create or update email thread
 async function createOrUpdateThread(merchantId, email, gateway, direction, vendorEmail, vendorName) {
   try {
-    console.log(`🔍 Thread check: ${email.subject} | Thread ID: ${email.threadId} | Direction: ${direction}`);
+    console.log(`🔍 Thread check: ${email.subject} | Direction: ${direction}`);
     
     // Normalize subject (remove Re:, Fwd:, etc.)
     const normalizeSubject = (subject) => {
@@ -269,7 +278,7 @@ async function createOrUpdateThread(merchantId, email, gateway, direction, vendo
         WHERE id = $10`,
         [
           email.threadId,
-          email.subject.replace(/^(Re|RE|re|Fwd|FWD|fwd):\s*/gi, '').trim() || thread.subject,
+          email.subject?.replace(/^(Re|RE|re|Fwd|FWD|fwd):\s*/gi, '').trim() || thread.subject,
           newStatus,
           lastActor,
           lastInbound,
@@ -282,6 +291,7 @@ async function createOrUpdateThread(merchantId, email, gateway, direction, vendo
       );
       
       console.log(`✅ Thread updated: status=${newStatus}, last_actor=${lastActor}`);
+      return false; // Not a new thread
       
     } else {
       console.log(`✨ Creating new thread: ${email.subject}`);
@@ -313,10 +323,12 @@ async function createOrUpdateThread(merchantId, email, gateway, direction, vendo
       );
       
       console.log(`✅ Thread created: ID=${result.rows[0].id}, status=${status}`);
+      return true; // New thread created
     }
     
   } catch (error) {
     console.error('Create/update thread error:', error);
+    return false;
   }
 }
 
@@ -454,16 +466,24 @@ export const testReminder = async (req, res) => {
       to: merchant.admin_reminder_email,
       subject: '✅ Test Email - Email Orchestrator',
       html: `
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-          <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 30px; text-align: center;">
-            <h1 style="margin: 0;">✅ Gmail SMTP Working!</h1>
+        <!DOCTYPE html>
+        <html>
+        <head><meta charset="utf-8"></head>
+        <body style="font-family: Arial, sans-serif; font-size: 14px; line-height: 1.6; color: #333;">
+          <div style="max-width: 600px; margin: 0 auto;">
+            <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 30px; text-align: center;">
+              <h1 style="margin: 0;">✅ Gmail SMTP Working!</h1>
+            </div>
+            <div style="padding: 30px;">
+              <p><strong>Merchant:</strong> ${merchant.company_name}</p>
+              <p><strong>Gmail:</strong> ${merchant.gmail_username}</p>
+              <p><strong>Admin Email:</strong> ${merchant.admin_reminder_email}</p>
+              <p><strong>Status:</strong> ✅ Active</p>
+              <p><strong>Time:</strong> ${new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })} IST</p>
+            </div>
           </div>
-          <div style="padding: 30px;">
-            <p><strong>Merchant:</strong> ${merchant.company_name}</p>
-            <p><strong>Gmail:</strong> ${merchant.gmail_username}</p>
-            <p><strong>Status:</strong> ✅ Active</p>
-          </div>
-        </div>
+        </body>
+        </html>
       `
     };
     
