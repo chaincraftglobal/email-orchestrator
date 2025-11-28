@@ -3,6 +3,7 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import pool from './config/database.js';
 import reminderChecker from './services/reminderChecker.js';
+import monitoringAgent from './services/monitoringAgent.js';
 import authRoutes from './routes/authRoutes.js';
 import merchantRoutes from './routes/merchantRoutes.js';
 import emailRoutes from './routes/emailRoutes.js';
@@ -30,6 +31,34 @@ app.get('/api/health', (req, res) => {
     message: 'Email Orchestrator Backend is running',
     timestamp: new Date().toISOString()
   });
+});
+
+// Monitoring Agent endpoints
+app.get('/api/monitor/status', (req, res) => {
+  try {
+    const status = monitoringAgent.getStatus();
+    res.json({ success: true, status });
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Failed to get monitor status' });
+  }
+});
+
+app.post('/api/monitor/check', async (req, res) => {
+  try {
+    await monitoringAgent.performHealthCheck();
+    res.json({ success: true, message: 'Health check completed', status: monitoringAgent.getStatus() });
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Health check failed' });
+  }
+});
+
+app.post('/api/monitor/report', async (req, res) => {
+  try {
+    await monitoringAgent.sendDailyReport();
+    res.json({ success: true, message: 'Daily report sent' });
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Failed to send daily report' });
+  }
 });
 
 app.use('/api/auth', authRoutes);
@@ -64,10 +93,13 @@ app.listen(PORT, () => {
   console.log(`📦 Merchants endpoint: http://localhost:${PORT}/api/merchants`);
   console.log(`📧 Emails endpoint: http://localhost:${PORT}/api/emails`);
   console.log(`⏰ Scheduler endpoint: http://localhost:${PORT}/api/scheduler`);
+  console.log(`🤖 Monitor endpoint: http://localhost:${PORT}/api/monitor/status`);
   
   setTimeout(() => {
     console.log('\n🎬 Starting automated systems...');
     reminderChecker.start();
-    console.log('✅ Reminder checker started!\n');
+    console.log('✅ Reminder checker started!');
+    monitoringAgent.start();
+    console.log('✅ Monitoring agent started!\n');
   }, 3000);
 });
