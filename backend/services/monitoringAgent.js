@@ -306,7 +306,6 @@ class MonitoringAgent {
         WHERE status = 'waiting_on_us' 
         AND COALESCE(self_reminder_sent_count, 0) = 0 
         AND last_inbound_at < NOW() - INTERVAL '1 hour'
-        AND COALESCE(is_completed, false) = false
       `);
       
       const vendorResult = await pool.query(`
@@ -315,7 +314,6 @@ class MonitoringAgent {
         WHERE status = 'waiting_on_vendor' 
         AND COALESCE(vendor_reminder_sent_count, 0) = 0 
         AND last_outbound_at < NOW() - INTERVAL '2 days'
-        AND COALESCE(is_completed, false) = false
       `);
       
       const overdueSelf = parseInt(selfResult.rows[0].count) || 0;
@@ -625,7 +623,7 @@ class MonitoringAgent {
           (SELECT COUNT(*) FROM email_threads WHERE status = 'waiting_on_us') as waiting_on_us,
           (SELECT COUNT(*) FROM email_threads WHERE status = 'waiting_on_vendor') as waiting_on_vendor,
           (SELECT COUNT(*) FROM email_threads WHERE is_hot = true) as hot_threads,
-          (SELECT COUNT(*) FROM email_threads WHERE is_completed = true) as completed_threads,
+          (SELECT COUNT(*) FROM email_threads WHERE status = 'completed') as completed_threads,
           (SELECT SUM(COALESCE(self_reminder_sent_count, 0)) FROM email_threads WHERE updated_at > NOW() - INTERVAL '24 hours') as self_reminders,
           (SELECT SUM(COALESCE(vendor_reminder_sent_count, 0)) FROM email_threads WHERE updated_at > NOW() - INTERVAL '24 hours') as vendor_nudges
       `);
