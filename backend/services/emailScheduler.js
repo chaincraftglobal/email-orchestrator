@@ -86,51 +86,6 @@ class EmailScheduler {
     console.log('✅ All schedulers stopped');
   }
 
-  // Check if email should be skipped (reminder/internal email)
-  shouldSkipEmail(email, merchant) {
-    const subject = (email.subject || '').toLowerCase();
-    const fromEmail = (email.from?.address || email.from || '').toLowerCase();
-    const toEmailsStr = JSON.stringify(email.to || []).toLowerCase();
-    
-    // Skip reminder emails sent by our system (check subject patterns)
-    if (subject.includes('reminder') || 
-        subject.includes('reply needed') ||
-        subject.includes('action required') ||
-        subject.includes('test') ||
-        subject.includes('email orchestrator')) {
-      console.log(`⏭️ PRE-FILTER: Skipping reminder email: "${email.subject?.substring(0, 50)}..."`);
-      return true;
-    }
-    
-    // Skip if subject starts with special emoji indicators
-    if (email.subject && (
-        email.subject.startsWith('⚠️') || 
-        email.subject.startsWith('🧪') ||
-        email.subject.startsWith('✅'))) {
-      console.log(`⏭️ PRE-FILTER: Skipping system email (emoji prefix): "${email.subject?.substring(0, 50)}..."`);
-      return true;
-    }
-    
-    // Skip emails TO admin reminder email
-    const adminEmail = merchant.admin_reminder_email?.toLowerCase();
-    if (adminEmail && toEmailsStr.includes(adminEmail)) {
-      console.log(`⏭️ PRE-FILTER: Skipping email to admin: ${adminEmail}`);
-      return true;
-    }
-    
-    // Skip emails FROM merchant email TO merchant email (self-sent)
-    const merchantEmail = merchant.gmail_username?.toLowerCase();
-    if (merchantEmail && fromEmail === merchantEmail) {
-      // Check if it's to ourselves
-      if (toEmailsStr.includes(merchantEmail)) {
-        console.log(`⏭️ PRE-FILTER: Skipping self-sent email`);
-        return true;
-      }
-    }
-    
-    return false;
-  }
-
   // Check emails for a merchant (main worker function)
   async checkEmailsForMerchant(merchant) {
     try {
@@ -156,36 +111,49 @@ class EmailScheduler {
       const sentEmails = await gmailService.fetchSentEmails(20);
       console.log(`📤 Fetched ${sentEmails.length} sent emails`);
       
+      // Get existing thread IDs for this merchant (to match outbound emails)
+      const existingThreads = await pool.query(
+        'SELECT gmail_thread_id, gateway FROM email_threads WHERE merchant_id = $1',
+        [merchant.id]
+      );
+      const threadMap = new Map();
+      for (const t of existingThreads.rows) {
+        threadMap.set(t.gmail_thread_id, t.gateway);
+      }
+      console.log(`📋 Found ${threadMap.size} existing gateway threads`);
+      
       // Process and store new emails
       let newEmailsCount = 0;
       
-      // Process inbox (inbound)
+      // Process inbox (inbound) - use gateway detection
       for (const email of inboxEmails) {
-        // FIRST: Check if this is a reminder/internal email - skip before detection
-        if (this.shouldSkipEmail(email, merchant)) {
-          continue;
-        }
-        
-        // THEN: Check if it's a gateway email
         const gateway = GatewayDetector.detectGateway(email, merchant.selected_gateways);
         if (gateway) {
-          const saved = await this.saveEmail(merchant, email, 'inbound', gateway);
+          const saved = await this.saveEmail(merchant.id, email, 'inbound', gateway);
           if (saved) newEmailsCount++;
         }
       }
       
-      // Process sent (outbound)
+      // Process sent (outbound) - match by thread_id to existing threads
       for (const email of sentEmails) {
-        // FIRST: Check if this is a reminder/internal email - skip before detection
-        if (this.shouldSkipEmail(email, merchant)) {
-          continue;
-        }
+        // First check if this email belongs to an existing gateway thread
+        const threadGateway = threadMap.get(email.threadId);
         
-        // THEN: Check if it's a gateway email
-        const gateway = GatewayDetector.detectGateway(email, merchant.selected_gateways);
-        if (gateway) {
-          const saved = await this.saveEmail(merchant, email, 'outbound', gateway);
-          if (saved) newEmailsCount++;
+        if (threadGateway) {
+          // This is a reply to an existing gateway thread
+          console.log(`🔍 Outbound email matches thread: "${email.subject}" → ${threadGateway}`);
+          const saved = await this.saveEmail(merchant.id, email, 'outbound', threadGateway);
+          if (saved) {
+            newEmailsCount++;
+            console.log(`✅ Saved outbound email to ${threadGateway} thread`);
+          }
+        } else {
+          // Also try gateway detection for new outbound threads (less common)
+          const gateway = GatewayDetector.detectGateway(email, merchant.selected_gateways);
+          if (gateway) {
+            const saved = await this.saveEmail(merchant.id, email, 'outbound', gateway);
+            if (saved) newEmailsCount++;
+          }
         }
       }
       
@@ -206,12 +174,27 @@ class EmailScheduler {
   }
 
   // Save email to database (returns true if new, false if duplicate)
-  async saveEmail(merchant, email, direction, gateway) {
+  async saveEmail(merchantId, email, direction, gateway) {
     try {
-      // Double-check: Skip reminder emails (backup filter)
+      // SKIP reminder emails and internal emails
       const subject = (email.subject || '').toLowerCase();
-      if (subject.includes('reminder') || subject.includes('reply needed')) {
-        console.log(`⏭️ SAVE-FILTER: Skipping reminder: "${email.subject?.substring(0, 40)}..."`);
+      const fromEmail = (email.from?.address || email.from || '').toLowerCase();
+      const toEmails = JSON.stringify(email.to || []).toLowerCase();
+      
+      // Don't save reminder emails sent by our system
+      if (subject.includes('reminder') || 
+          subject.includes('🧪 test') || 
+          subject.includes('⚠️') ||
+          subject.includes('email orchestrator') ||
+          subject.includes('action required') ||
+          subject.includes('reply needed')) {
+        console.log(`⏭️ Skipping reminder email: "${email.subject}"`);
+        return false;
+      }
+      
+      // Don't save emails sent TO admin reminder email (internal communications)
+      if (toEmails.includes('lacewingtech') || toEmails.includes('admin_reminder')) {
+        console.log(`⏭️ Skipping internal email to admin`);
         return false;
       }
       
@@ -234,7 +217,7 @@ class EmailScheduler {
           direction, gateway, has_attachments, attachments, email_date
         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
         [
-          merchant.id,
+          merchantId,
           email.messageId,
           email.threadId,
           email.subject,
@@ -253,8 +236,10 @@ class EmailScheduler {
         ]
       );
       
+      console.log(`💾 Saved ${direction} email: "${email.subject}" (${gateway})`);
+      
       // Update or create thread
-      await this.updateThread(merchant.id, email, gateway, direction);
+      await this.updateThread(merchantId, email, gateway, direction);
       
       return true; // New email saved
     } catch (error) {
@@ -281,8 +266,10 @@ class EmailScheduler {
         const lastActor = direction === 'inbound' ? 'vendor' : 'us';
         const status = direction === 'inbound' ? 'waiting_on_us' : 'waiting_on_vendor';
         
-        // If we replied, clear hot flag
+        // If we replied, clear hot flag and reset self-reminder tracking
         const isHot = direction === 'outbound' ? false : thread.is_hot;
+        
+        console.log(`🔄 Updating thread: status=${status}, last_actor=${lastActor}`);
         
         await pool.query(
           `UPDATE email_threads SET
@@ -304,10 +291,21 @@ class EmailScheduler {
             thread.id
           ]
         );
+        
+        console.log(`✅ Thread updated: "${thread.subject}" → ${status}`);
       } else {
         // Create new thread
         const lastActor = direction === 'inbound' ? 'vendor' : 'us';
         const status = direction === 'inbound' ? 'waiting_on_us' : 'waiting_on_vendor';
+        
+        // For outbound emails, get vendor info from TO field
+        let finalVendorEmail = vendorEmail;
+        let finalVendorName = vendorName;
+        
+        if (direction === 'outbound' && email.to && email.to.length > 0) {
+          finalVendorEmail = email.to[0].address || email.to[0];
+          finalVendorName = email.to[0].name || finalVendorEmail;
+        }
         
         await pool.query(
           `INSERT INTO email_threads (
@@ -320,8 +318,8 @@ class EmailScheduler {
             email.threadId,
             email.subject,
             gateway,
-            vendorEmail,
-            vendorName,
+            finalVendorEmail,
+            finalVendorName,
             status,
             lastActor,
             direction === 'inbound' ? email.date : null,
@@ -329,6 +327,8 @@ class EmailScheduler {
             email.date
           ]
         );
+        
+        console.log(`✨ New thread created: "${email.subject}" → ${status}`);
       }
     } catch (error) {
       console.error('Error updating thread:', error);
