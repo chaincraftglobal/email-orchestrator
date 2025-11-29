@@ -40,20 +40,23 @@ class MonitoringAgent {
       dailyReportTime: '09:00',              // 9 AM IST
       
       // Alert thresholds
-      maxMinutesSinceEmailCheck: 30,         // Alert if no email check for 30 min
-      maxStuckThreadMinutes: 120,            // Alert if thread stuck for 2 hours
-      maxPendingReminders: 10,               // Alert if too many pending reminders
+      maxMinutesSinceEmailCheck: 180,        // Alert if no email check for 3 HOURS (was 30 min)
+      maxStuckThreadMinutes: 480,            // Alert if thread stuck for 8 hours (was 2 hours)
+      maxPendingReminders: 20,               // Alert if too many pending reminders
       maxSelfEmailLoopCount: 3,              // Alert if potential self-loop detected
       
       // Alert cooldowns (prevent spam)
-      alertCooldownMinutes: 60,              // Don't repeat same alert for 1 hour
+      alertCooldownMinutes: 360,             // Don't repeat same alert for 6 HOURS (was 1 hour)
       
       // Admin notification email
       adminEmail: process.env.ADMIN_ALERT_EMAIL || 'dipak.lacewingtech@gmail.com',
       
       // Expected behaviors
-      expectedWorkingHours: { start: 9, end: 19 }, // 9 AM - 7 PM IST
+      expectedWorkingHours: { start: 9, end: 22 }, // 9 AM - 10 PM IST
       expectedWorkingDays: [1, 2, 3, 4, 5, 6],     // Mon-Sat
+      
+      // Feature flags
+      enableStaleCheckAlerts: false,         // DISABLED - too noisy
     };
   }
 
@@ -194,6 +197,11 @@ class MonitoringAgent {
   async checkEmailFetching() {
     try {
       const config = this.getConfig();
+      
+      // Feature flag - skip this check if disabled (too noisy)
+      if (!config.enableStaleCheckAlerts) {
+        return { healthy: true };
+      }
       
       // Check last email check time for each merchant
       const result = await pool.query(`
